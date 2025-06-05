@@ -1,11 +1,10 @@
-
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Play, Square, Clock, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { Play, Square, Clock, CheckCircle, XCircle, AlertCircle, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface KarateTest {
@@ -15,12 +14,14 @@ interface KarateTest {
   category: string;
   scenarios: string[];
   enabled: boolean;
+  dataFiles?: string[];
 }
 
 interface TestExecutorProps {
   selectedTests: string[];
   tests: KarateTest[];
   onExecute: () => void;
+  isElectronMode?: boolean;
 }
 
 interface ExecutionResult {
@@ -28,12 +29,15 @@ interface ExecutionResult {
   status: 'running' | 'passed' | 'failed' | 'pending';
   duration?: number;
   scenarios?: { name: string; status: 'passed' | 'failed' }[];
+  reportUrl?: string;
+  error?: string;
 }
 
 const TestExecutor: React.FC<TestExecutorProps> = ({
   selectedTests,
   tests,
-  onExecute
+  onExecute,
+  isElectronMode = false
 }) => {
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResults, setExecutionResults] = useState<ExecutionResult[]>([]);
@@ -51,23 +55,29 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
     setProgress(0);
     setExecutionResults([]);
     
-    toast.success(`Iniciando execução de ${selectedTests.length} teste(s)`);
+    if (!isElectronMode) {
+      toast.warning('Execução simulada - Use o modo Electron para execução real');
+      await simulateExecution();
+    } else {
+      toast.success(`Iniciando execução de ${selectedTests.length} teste(s) no Karate`);
+      await executeRealTests();
+    }
 
-    // Simular execução dos testes
+    onExecute();
+  };
+
+  const simulateExecution = async () => {
     for (let i = 0; i < selectedTests.length; i++) {
       const testId = selectedTests[i];
       const test = tests.find(t => t.id === testId);
       
-      // Marcar como executando
       setExecutionResults(prev => [
         ...prev,
         { testId, status: 'running' }
       ]);
 
-      // Simular tempo de execução
       await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
 
-      // Resultado aleatório para demonstração
       const success = Math.random() > 0.3;
       const duration = Math.floor(Math.random() * 5000 + 500);
       
@@ -93,22 +103,78 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
     }
 
     setIsExecuting(false);
-    
-    const passed = executionResults.filter(r => r.status === 'passed').length;
-    const failed = selectedTests.length - passed;
-    
-    if (failed === 0) {
-      toast.success(`Todos os ${selectedTests.length} testes passaram!`);
-    } else {
-      toast.error(`${failed} teste(s) falharam de ${selectedTests.length} executados`);
-    }
+  };
 
-    onExecute();
+  const executeRealTests = async () => {
+    try {
+      const { electronService } = await import('@/services/electronService');
+      
+      const selectedPaths = selectedTestObjects.map(test => test.path);
+      
+      setExecutionResults(
+        selectedTests.map(testId => ({ testId, status: 'pending' as const }))
+      );
+
+      const results = await electronService.runTests(selectedPaths);
+      
+      const processedResults = selectedTests.map((testId, index) => {
+        const test = tests.find(t => t.id === testId);
+        const electronResult = results[index];
+        
+        if (!electronResult) {
+          return {
+            testId,
+            status: 'failed' as const,
+            error: 'Resultado não encontrado'
+          };
+        }
+
+        return {
+          testId,
+          status: electronResult.success ? 'passed' as const : 'failed' as const,
+          reportUrl: electronResult.report,
+          error: electronResult.error,
+          duration: 0 // Duração não disponível no formato atual
+        };
+      });
+
+      setExecutionResults(processedResults);
+      setProgress(100);
+      
+      const passed = processedResults.filter(r => r.status === 'passed').length;
+      const failed = processedResults.length - passed;
+      
+      if (failed === 0) {
+        toast.success(`Todos os ${selectedTests.length} testes passaram! 🎉`);
+      } else {
+        toast.error(`${failed} teste(s) falharam de ${selectedTests.length} executados`);
+      }
+      
+    } catch (error) {
+      toast.error('Erro durante a execução dos testes');
+      console.error('Erro na execução:', error);
+      
+      setExecutionResults(
+        selectedTests.map(testId => ({
+          testId,
+          status: 'failed' as const,
+          error: 'Erro na execução'
+        }))
+      );
+    } finally {
+      setIsExecuting(false);
+    }
   };
 
   const handleStop = () => {
     setIsExecuting(false);
     toast.warning('Execução interrompida pelo usuário');
+  };
+
+  const handleOpenReport = (reportUrl: string) => {
+    if (reportUrl) {
+      window.open(reportUrl, '_blank');
+    }
   };
 
   const getStatusIcon = (status: ExecutionResult['status']) => {
@@ -139,6 +205,19 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
           </Badge>
         </div>
 
+        {/* Mode Indicator */}
+        <div className="text-xs p-2 rounded border">
+          {isElectronMode ? (
+            <span className="text-green-600 font-medium">
+              ⚡ Modo Electron - Execução real com Maven/Karate
+            </span>
+          ) : (
+            <span className="text-orange-600 font-medium">
+              🌐 Modo Web - Execução simulada
+            </span>
+          )}
+        </div>
+
         {selectedTests.length > 0 && (
           <div className="space-y-2">
             {selectedTestObjects.map((test) => (
@@ -161,7 +240,7 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
               className="w-full bg-green-600 hover:bg-green-700"
             >
               <Play className="h-4 w-4 mr-2" />
-              Executar Selecionados
+              {isElectronMode ? 'Executar com Karate' : 'Simular Execução'}
             </Button>
           ) : (
             <Button 
@@ -208,12 +287,31 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
                       {getStatusIcon(result.status)}
                       <span className="font-medium text-sm">{test?.name}</span>
                     </div>
-                    {result.duration && (
-                      <Badge variant="outline" className="text-xs">
-                        {(result.duration / 1000).toFixed(1)}s
-                      </Badge>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {result.duration && (
+                        <Badge variant="outline" className="text-xs">
+                          {(result.duration / 1000).toFixed(1)}s
+                        </Badge>
+                      )}
+                      {result.reportUrl && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleOpenReport(result.reportUrl!)}
+                          className="h-6 px-2 text-xs"
+                        >
+                          <ExternalLink className="h-3 w-3 mr-1" />
+                          Relatório
+                        </Button>
+                      )}
+                    </div>
                   </div>
+                  
+                  {result.error && (
+                    <div className="ml-6 text-xs text-red-600 bg-red-50 p-2 rounded">
+                      {result.error}
+                    </div>
+                  )}
                   
                   {result.scenarios && result.scenarios.length > 0 && (
                     <div className="ml-6 space-y-1">

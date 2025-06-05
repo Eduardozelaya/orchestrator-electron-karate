@@ -1,10 +1,11 @@
+
 import React from 'react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Check, X, FileText, Play } from 'lucide-react';
+import { Check, X, FileText, FolderOpen, File } from 'lucide-react';
 
 interface KarateTest {
   id: string;
@@ -13,6 +14,7 @@ interface KarateTest {
   category: string;
   scenarios: string[];
   enabled: boolean;
+  dataFiles?: string[];
 }
 
 interface TestSelectorProps {
@@ -20,13 +22,15 @@ interface TestSelectorProps {
   selectedTests: string[];
   onSelectionChange: (testIds: string[]) => void;
   isScanning: boolean;
+  onDataFileView?: (testId: string, dataFile: string) => void;
 }
 
 const TestSelector: React.FC<TestSelectorProps> = ({
   tests,
   selectedTests,
   onSelectionChange,
-  isScanning
+  isScanning,
+  onDataFileView
 }) => {
   const categories = [...new Set(tests.map(test => test.category))];
 
@@ -55,6 +59,17 @@ const TestSelector: React.FC<TestSelectorProps> = ({
     } else {
       const newSelection = [...new Set([...selectedTests, ...categoryTestIds])];
       onSelectionChange(newSelection);
+    }
+  };
+
+  const getCategoryDisplayName = (category: string) => {
+    switch (category) {
+      case 'clienteExistente':
+        return 'Cliente Existente';
+      case 'clientePotencial':
+        return 'Cliente Potencial';
+      default:
+        return category;
     }
   };
 
@@ -116,7 +131,8 @@ const TestSelector: React.FC<TestSelectorProps> = ({
                   onCheckedChange={() => handleCategoryToggle(category)}
                   className="data-[state=checked]:bg-green-600 data-[state=checked]:border-green-600"
                 />
-                <h3 className="font-semibold text-slate-800">{category}</h3>
+                <FolderOpen className="h-4 w-4 text-blue-600" />
+                <h3 className="font-semibold text-slate-800">{getCategoryDisplayName(category)}</h3>
                 <Badge variant="outline" className="text-xs">
                   {selectedInCategory}/{categoryTests.length}
                 </Badge>
@@ -152,6 +168,28 @@ const TestSelector: React.FC<TestSelectorProps> = ({
                       <p className="text-xs text-slate-600 font-mono truncate" title={test.path}>
                         {test.path}
                       </p>
+                      
+                      {/* Data Files Section */}
+                      {test.dataFiles && test.dataFiles.length > 0 && (
+                        <div className="mt-2">
+                          <p className="text-xs text-slate-600 mb-1">Arquivos de dados:</p>
+                          <div className="flex flex-wrap gap-1">
+                            {test.dataFiles.map((dataFile, index) => (
+                              <Button
+                                key={index}
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-xs"
+                                onClick={() => onDataFileView?.(test.id, dataFile)}
+                              >
+                                <File className="h-3 w-3 mr-1" />
+                                {dataFile.split('/').pop()}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       {test.scenarios.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {test.scenarios.map((scenario, index) => (
@@ -178,7 +216,7 @@ const TestSelector: React.FC<TestSelectorProps> = ({
         <div className="text-center py-8 text-slate-500">
           <FileText className="h-12 w-12 mx-auto mb-4 opacity-50" />
           <p>Nenhum teste encontrado</p>
-          <p className="text-sm">Verifique se o caminho do projeto está correto</p>
+          <p className="text-sm">Verifique se o projeto Karate está configurado corretamente</p>
         </div>
       )}
     </div>
