@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -38,28 +37,73 @@ const Index = () => {
   });
 
   useEffect(() => {
-    // Verificar se está rodando no Electron
+    // Verificação melhorada do modo Electron
     const checkElectronMode = () => {
-      const hasElectronAPI = typeof window !== 'undefined' && !!window.electronAPI;
+      const hasElectronAPI = electronService.isElectronMode;
       setIsElectronMode(hasElectronAPI);
       
+      console.log('🔍 Verificando modo Electron...');
+      console.log('  window.electronAPI:', typeof window !== 'undefined' ? !!window.electronAPI : false);
+      console.log('  navigator.userAgent:', navigator.userAgent);
+      console.log('  Modo Electron detectado:', hasElectronAPI);
+      
       if (hasElectronAPI) {
-        toast.success('Modo Electron detectado - Funcionalidades completas disponíveis!');
+        toast.success('⚡ Modo Electron detectado - Funcionalidades completas disponíveis!');
         // Auto-carregar testes se estiver no Electron
         handleElectronScan();
       } else {
-        toast.info('Modo Web - Use a interface de upload para carregar projetos');
+        toast.info('🌐 Modo Web - Funcionalidades limitadas (dados simulados)');
+        // Carregar dados simulados para demonstração
+        loadSimulatedData();
       }
     };
 
     checkElectronMode();
   }, []);
 
+  const loadSimulatedData = async () => {
+    setIsScanning(true);
+    setProjectPath('Projeto Simulado (Modo Web)');
+    
+    try {
+      // Usar o método público do electronService que já tem fallback
+      const featureTests = await electronService.getFeatureTests();
+      
+      const convertedTests: KarateTest[] = featureTests.map((test, index) => {
+        const pathParts = test.feature.split('/');
+        const category = pathParts[0] || 'default';
+        const testName = pathParts[pathParts.length - 1]?.replace('.feature', '') || `test-${index}`;
+        
+        return {
+          id: `simulated-${index}`,
+          name: testName,
+          path: test.feature,
+          category: category,
+          scenarios: ['Cenário simulado 1', 'Cenário simulado 2'],
+          enabled: true,
+          dataFiles: test.dataFiles
+        };
+      });
+
+      setDiscoveredTests(convertedTests);
+      toast.success(`📊 ${convertedTests.length} testes simulados carregados!`);
+      
+    } catch (error) {
+      console.error('Erro ao carregar dados simulados:', error);
+      toast.error('Erro ao carregar dados simulados');
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
   const handleElectronScan = async () => {
-    if (!isElectronMode) return;
+    if (!isElectronMode) {
+      await loadSimulatedData();
+      return;
+    }
 
     setIsScanning(true);
-    setProjectPath('Projeto Karate Local');
+    setProjectPath('Projeto Karate Local (Electron)');
     
     try {
       const featureTests = await electronService.getFeatureTests();
@@ -68,25 +112,27 @@ const Index = () => {
       const convertedTests: KarateTest[] = featureTests.map((test, index) => {
         const pathParts = test.feature.split('/');
         const category = pathParts[0] || 'default';
-        const testName = pathParts[1] || `test-${index}`;
+        const testName = pathParts[pathParts.length - 1]?.replace('.feature', '') || `test-${index}`;
         
         return {
           id: `electron-${index}`,
           name: testName,
           path: test.feature,
           category: category,
-          scenarios: [], // Não disponível no formato do Electron
+          scenarios: [], // Não disponível no formato atual do Electron
           enabled: true,
           dataFiles: test.dataFiles
         };
       });
 
       setDiscoveredTests(convertedTests);
-      toast.success(`${convertedTests.length} testes descobertos!`);
+      toast.success(`🎉 ${convertedTests.length} testes descobertos via Electron!`);
       
     } catch (error) {
-      console.error('Erro ao escanear testes:', error);
+      console.error('Erro ao escanear testes via Electron:', error);
       toast.error('Erro ao escanear testes do projeto Karate');
+      // Fallback para dados simulados
+      await loadSimulatedData();
     } finally {
       setIsScanning(false);
     }
@@ -190,11 +236,11 @@ const Index = () => {
           <p className="text-lg text-slate-600">
             Descubra, selecione e execute testes Karate dinamicamente
           </p>
-          {isElectronMode && (
-            <Badge className="mt-2 bg-green-100 text-green-700">
-              Modo Electron Ativo
+          <div className="flex items-center justify-center gap-2 mt-2">
+            <Badge className={isElectronMode ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700"}>
+              {isElectronMode ? "⚡ Modo Electron Ativo" : "🌐 Modo Web (Simulado)"}
             </Badge>
-          )}
+          </div>
         </div>
 
         {/* Project Upload Section */}
@@ -219,38 +265,39 @@ const Index = () => {
           </Card>
         )}
 
-        {/* Electron Auto-Scan Button */}
-        {isElectronMode && (
-          <Card className="shadow-lg border-0 bg-white/80 backdrop-blur">
-            <CardHeader className="pb-4">
-              <CardTitle className="flex items-center gap-2 text-slate-800">
-                <Zap className="h-5 w-5 text-green-600" />
-                Projeto Karate Local
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-600 mb-2">
-                    Escaneie automaticamente o projeto Karate configurado
+        {/* Auto-Scan Button */}
+        <Card className="shadow-lg border-0 bg-white/80 backdrop-blur">
+          <CardHeader className="pb-4">
+            <CardTitle className="flex items-center gap-2 text-slate-800">
+              <Zap className={`h-5 w-5 ${isElectronMode ? 'text-green-600' : 'text-orange-600'}`} />
+              {isElectronMode ? 'Projeto Karate Local' : 'Dados Simulados'}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-slate-600 mb-2">
+                  {isElectronMode 
+                    ? 'Escaneie automaticamente o projeto Karate configurado'
+                    : 'Visualize dados simulados para desenvolvimento'
+                  }
+                </p>
+                {projectPath && (
+                  <p className="text-xs text-green-600 font-medium">
+                    {discoveredTests.length} testes descobertos
                   </p>
-                  {projectPath && (
-                    <p className="text-xs text-green-600 font-medium">
-                      {discoveredTests.length} testes descobertos
-                    </p>
-                  )}
-                </div>
-                <Button 
-                  onClick={handleElectronScan}
-                  disabled={isScanning}
-                  className="bg-green-600 hover:bg-green-700"
-                >
-                  {isScanning ? 'Escaneando...' : 'Escanear Testes'}
-                </Button>
+                )}
               </div>
-            </CardContent>
-          </Card>
-        )}
+              <Button 
+                onClick={handleElectronScan}
+                disabled={isScanning}
+                className={isElectronMode ? "bg-green-600 hover:bg-green-700" : "bg-orange-600 hover:bg-orange-700"}
+              >
+                {isScanning ? 'Escaneando...' : (isElectronMode ? 'Escanear Testes' : 'Carregar Simulados')}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Test Discovery and Selection */}
         {(discoveredTests.length > 0 || isScanning) && (
