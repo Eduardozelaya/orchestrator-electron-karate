@@ -1,11 +1,10 @@
-
 import React from 'react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
-import { CheckAll, X, FileText, Play } from 'lucide-react';
+import { Check, X, FileText, Play } from 'lucide-react';
 
 interface KarateTest {
   id: string;
@@ -93,7 +92,7 @@ const TestSelector: React.FC<TestSelectorProps> = ({
             </>
           ) : (
             <>
-              <CheckAll className="h-4 w-4" />
+              <Check className="h-4 w-4" />
               Selecionar Todos
             </>
           )}
