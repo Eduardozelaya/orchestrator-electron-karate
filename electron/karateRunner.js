@@ -4,6 +4,8 @@ const fs = require('fs');
 
 let projectRoot = '';
 let basePath = '';
+let currentMavenProcess = null;
+let shouldContinueExecution = true;
 
 function setProjectPath(projectPath) {
   if (!fs.existsSync(projectPath)) {
@@ -144,15 +146,55 @@ function listFeatureFiles() {
   return organizedResults;
 }
 
+function killCurrentTest() {
+  if (currentMavenProcess) {
+    try {
+      // No Windows, precisamos usar taskkill para garantir que todos os processos filhos sejam mortos
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', currentMavenProcess.pid, '/T', '/F']);
+      } else {
+        currentMavenProcess.kill('SIGTERM');
+      }
+      currentMavenProcess = null;
+      shouldContinueExecution = false; // Impede que novos testes sejam iniciados
+      return true;
+    } catch (error) {
+      console.error('Erro ao tentar matar o processo Maven:', error);
+      return false;
+    }
+  }
+  shouldContinueExecution = false; // Mesmo sem processo atual, impede novos testes
+  return true;
+}
+
 async function runTests(paths) {
   if (!projectRoot || !basePath) {
     throw new Error('Caminho do projeto não configurado. Use setProjectPath primeiro.');
   }
 
+  // Reseta o flag de controle de execução
+  shouldContinueExecution = true;
+  
   // Create a map to store results in the same order as paths
   const resultsMap = new Map();
   
   for (const [index, featurePath] of paths.entries()) {
+    // Verifica se a execução deve continuar
+    if (!shouldContinueExecution) {
+      console.log('🛑 Execução interrompida pelo usuário. Parando sequência de testes.');
+      
+      // Adiciona resultados cancelados para os testes restantes
+      for (let i = index; i < paths.length; i++) {
+        resultsMap.set(i, {
+          success: false,
+          feature: paths[i],
+          error: 'Execução cancelada pelo usuário',
+          originalIndex: i
+        });
+      }
+      break;
+    }
+
     console.log(`🚀 Executando teste ${index + 1}/${paths.length}:`, featurePath);
     
     const command = process.platform === 'win32' ? 'mvn.cmd' : 'mvn';
@@ -161,7 +203,7 @@ async function runTests(paths) {
     console.log('📋 Comando:', command, args.join(' '));
 
     const result = await new Promise((resolve) => {
-      const child = spawn(command, args, {
+      currentMavenProcess = spawn(command, args, {
         cwd: projectRoot,
         shell: true,
         stdio: ['inherit', 'pipe', 'pipe']
@@ -170,21 +212,33 @@ async function runTests(paths) {
       let stdout = '';
       let stderr = '';
 
-      child.stdout?.on('data', data => {
+      currentMavenProcess.stdout?.on('data', data => {
         const output = data.toString();
         stdout += output;
         console.log('📤 Maven output:', output);
       });
 
-      child.stderr?.on('data', data => {
+      currentMavenProcess.stderr?.on('data', data => {
         const output = data.toString();
         stderr += output;
         console.error('📤 Maven error:', output);
       });
 
-      child.on('close', code => {
+      currentMavenProcess.on('close', code => {
         console.log(`✅ Processo finalizado com código: ${code}`);
+        currentMavenProcess = null;
         
+        // Se a execução foi interrompida, considera como falha
+        if (!shouldContinueExecution) {
+          resolve({
+            success: false,
+            feature: featurePath,
+            error: 'Execução interrompida pelo usuário',
+            originalIndex: index
+          });
+          return;
+        }
+
         const reportBaseName = featurePath.replace(/\//g, '.').replace(/\.feature$/, '') + '.html';
         const reportPath = path.join('target', 'karate-reports', reportBaseName);
         const absoluteReportPath = path.resolve(projectRoot, reportPath);
@@ -197,7 +251,7 @@ async function runTests(paths) {
             feature: featurePath,
             report: `file://${absoluteReportPath}`,
             output: stdout,
-            originalIndex: index // Store the original position
+            originalIndex: index
           });
         } else {
           resolve({
@@ -210,8 +264,9 @@ async function runTests(paths) {
         }
       });
 
-      child.on('error', (error) => {
+      currentMavenProcess.on('error', (error) => {
         console.error('❌ Erro ao executar comando:', error);
+        currentMavenProcess = null;
         resolve({
           success: false,
           feature: featurePath,
@@ -233,4 +288,4 @@ async function runTests(paths) {
   return results;
 }
 
-module.exports = { setProjectPath, listFeatureFiles, runTests };
+module.exports = { setProjectPath, listFeatureFiles, runTests, killCurrentTest };

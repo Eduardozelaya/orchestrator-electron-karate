@@ -10,6 +10,7 @@ interface ElectronAPI {
   uploadFile: (path: string, content: ArrayBuffer) => Promise<void>;
   downloadFile: (path: string) => Promise<void>;
   deleteFile: (path: string) => Promise<void>;
+  stopTestExecution: () => Promise<{ success: boolean; error?: string }>;
 }
 
 declare global {
@@ -201,6 +202,20 @@ export class ElectronService {
     } catch (error) {
       console.error('❌ Erro ao deletar arquivo:', error);
       throw error;
+    }
+  }
+
+  async stopTestExecution(): Promise<boolean> {
+    if (!this.isElectronMode) {
+      return true; // No modo simulado, sempre retorna sucesso
+    }
+
+    try {
+      const result = await window.electronAPI!.stopTestExecution();
+      return result.success;
+    } catch (error) {
+      console.error('❌ Erro ao tentar parar execução:', error);
+      return false;
     }
   }
 

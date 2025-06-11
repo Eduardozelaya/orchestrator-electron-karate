@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Play, Square, Clock, CheckCircle, XCircle, AlertCircle, ExternalLink } from 'lucide-react';
+import { Play, Square, Clock, CheckCircle, XCircle, AlertCircle, ExternalLink, FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { electronService } from '@/services/electronService';
 
@@ -49,8 +49,33 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
   const [executionResults, setExecutionResults] = useState<ExecutionResult[]>([]);
   const [progress, setProgress] = useState(0);
   const [generalReportUrl, setGeneralReportUrl] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [projectPath, setProjectPath] = useState('');
 
   const selectedTestObjects = tests.filter(test => selectedTests.includes(test.id));
+
+  const handleLoadTests = async () => {
+    setIsLoading(true);
+    try {
+      if (isElectronMode) {
+        const projectResult = await electronService.selectMavenProject();
+        if (!projectResult.success) {
+          throw new Error(projectResult.error);
+        }
+        setProjectPath(projectResult.projectRoot || '');
+        // Limpa os resultados quando um novo projeto é carregado
+        setExecutionResults([]);
+        setProgress(0);
+        
+        await refreshTests();
+      }
+    } catch (error) {
+      console.error('Erro ao carregar cenários:', error);
+      toast.error(error instanceof Error ? error.message : 'Erro ao carregar cenários');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleExecute = async () => {
     if (selectedTests.length === 0) {
@@ -184,9 +209,28 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
     }
   };
 
-  const handleStop = () => {
-    setIsExecuting(false);
-    toast.warning('Execução interrompida pelo usuário');
+  const handleStop = async () => {
+    const stopped = await electronService.stopTestExecution();
+    if (stopped) {
+      setIsExecuting(false);
+      // Atualiza o status de todos os testes pendentes para cancelado
+      setExecutionResults(prev => {
+        const updatedResults = [...prev];
+        for (let i = 0; i < updatedResults.length; i++) {
+          if (updatedResults[i].status === 'pending' || updatedResults[i].status === 'running') {
+            updatedResults[i] = {
+              ...updatedResults[i],
+              status: 'failed',
+              error: 'Execução cancelada pelo usuário'
+            };
+          }
+        }
+        return updatedResults;
+      });
+      toast.warning('Execução interrompida pelo usuário. Nenhum novo teste será iniciado.');
+    } else {
+      toast.error('Não foi possível interromper a execução');
+    }
   };
 
   const handleOpenReport = (reportUrl: string) => {
@@ -219,14 +263,47 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
         return <CheckCircle className="h-4 w-4 text-green-600" />;
       case 'failed':
         return <XCircle className="h-4 w-4 text-red-600" />;
+      case 'pending':
+        return <Clock className="h-4 w-4 text-gray-400" />;
       default:
         return <AlertCircle className="h-4 w-4 text-gray-400" />;
+    }
+  };
+
+  const getStatusText = (result: ExecutionResult) => {
+    if (result.error === 'Execução cancelada pelo usuário') {
+      return 'Cancelado';
+    }
+    switch (result.status) {
+      case 'running':
+        return 'Em execução';
+      case 'passed':
+        return 'Passou';
+      case 'failed':
+        return result.error ? 'Falhou' : 'Cancelado';
+      case 'pending':
+        return 'Pendente';
+      default:
+        return 'Desconhecido';
     }
   };
 
   const totalDuration = executionResults
     .filter(r => r.duration)
     .reduce((sum, r) => sum + (r.duration || 0), 0);
+
+  const refreshTests = async () => {
+    try {
+      if (isElectronMode) {
+        const tests = await electronService.getFeatureTests();
+        // Aqui você pode emitir um evento ou chamar uma função para atualizar a lista de testes
+        // dependendo de como sua aplicação está estruturada
+      }
+    } catch (error) {
+      console.error('Erro ao atualizar testes:', error);
+      toast.error('Erro ao atualizar lista de testes');
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -239,11 +316,27 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
           </Badge>
         </div>
 
+        {/* Project Selection Button */}
+        <Button 
+          onClick={handleLoadTests}
+          variant="outline"
+          className="w-full"
+          disabled={isLoading}
+        >
+          <FolderOpen className="h-4 w-4 mr-2" />
+          {isLoading ? 'Carregando...' : 'Selecionar Projeto Karate'}
+        </Button>
+
         {/* Mode Indicator */}
         <div className="text-xs p-2 rounded border">
           {isElectronMode ? (
             <span className="text-green-600 font-medium">
               ⚡ Modo Electron - Execução real com Maven/Karate
+              {projectPath && (
+                <div className="text-xs text-slate-600 mt-1">
+                  📁 Projeto: {projectPath}
+                </div>
+              )}
             </span>
           ) : (
             <span className="text-orange-600 font-medium">
@@ -337,10 +430,18 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
                       <span className="font-medium text-sm">{test?.name}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      {result.duration && (
-                        <Badge variant="outline" className="text-xs">
-                          {(result.duration / 1000).toFixed(1)}s
-                        </Badge>
+                      {/* Mostra o status apenas se o teste foi cancelado */}
+                      {result.error === 'Execução cancelada pelo usuário' && (
+                        <>
+                          <Badge variant="secondary">
+                            Cancelado
+                          </Badge>
+                          {result.duration && (
+                            <Badge variant="outline" className="text-xs">
+                              {(result.duration / 1000).toFixed(1)}s
+                            </Badge>
+                          )}
+                        </>
                       )}
                       {result.reportUrl && (
                         <Button
@@ -355,8 +456,6 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
                       )}
                     </div>
                   </div>
-                  
-                  
                 </div>
               );
             })}

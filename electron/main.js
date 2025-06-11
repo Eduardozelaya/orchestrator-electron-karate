@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsPromises = require('fs/promises');
-const { setProjectPath, listFeatureFiles, runTests, getBasePath } = require('./karateRunner');
+const { setProjectPath, listFeatureFiles, runTests, getBasePath, killCurrentTest } = require('./karateRunner');
 const { Console } = require('console');
 
 let projectPath = null;
@@ -236,6 +236,17 @@ function createWindow() {
     } catch (err) {
       console.error('❌ Erro ao deletar arquivo:', err);
       throw err;
+    }
+  });
+
+  ipcMain.handle('stop-test-execution', async () => {
+    console.log('📨 IPC: stop-test-execution chamado');
+    try {
+      const killed = killCurrentTest();
+      return { success: killed };
+    } catch (error) {
+      console.error('❌ Erro ao tentar parar execução:', error);
+      return { success: false, error: error.message };
     }
   });
 }
