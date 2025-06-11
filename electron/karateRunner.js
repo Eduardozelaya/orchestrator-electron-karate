@@ -1,89 +1,161 @@
-
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-// Configuração do projeto - ajuste conforme necessário
-const projectRoot = 'C:\\Users\\ferib\\bonitaCotizadorTestArtifact';
-const basePath = path.resolve(__dirname, '../src/test/resources');
+let projectRoot = '';
+let basePath = '';
 
-console.log('🔍 Caminho base para features:', basePath);
+function setProjectPath(projectPath) {
+  if (!fs.existsSync(projectPath)) {
+    throw new Error(`Caminho do projeto não existe: ${projectPath}`);
+  }
+
+  projectRoot = projectPath;
+  const possibleResourcePaths = [
+    path.join(projectPath, 'src', 'test', 'resources'),
+    projectPath
+  ];
+
+  basePath = possibleResourcePaths.find(p => fs.existsSync(p));
+  
+  if (!basePath) {
+    throw new Error(`Diretório de recursos de teste não encontrado em: ${projectPath}`);
+  }
+
+  console.log('🔍 Projeto configurado:', projectRoot);
+  console.log('🔍 Caminho base para features:', basePath);
+  return { projectRoot, basePath };
+}
+
+function findDataFiles(scenarioDir) {
+    let dataFiles = [];
+    let descriptionFiles = [];
+
+    function searchFiles(dir) {
+      try {
+        const files = fs.readdirSync(dir, { withFileTypes: true });
+        files.forEach(file => {
+          const fullPath = path.join(dir, file.name);
+          if (file.isDirectory()) {
+            if (file.name.toLowerCase() === 'data') {
+              const dataContents = fs.readdirSync(fullPath)
+                .filter(f => /\.(csv|json)$/i.test(f))
+                .map(f => path.relative(basePath, path.join(fullPath, f)).replace(/\\/g, '/'));
+              dataFiles.push(...dataContents);
+            } else if (file.name.toLowerCase() === 'description') {
+              const descContents = fs.readdirSync(fullPath)
+                .filter(f => /\.(csv|json)$/i.test(f))
+                .map(f => path.relative(basePath, path.join(fullPath, f)).replace(/\\/g, '/'));
+              descriptionFiles.push(...descContents);
+            } else {
+              searchFiles(fullPath);
+            }
+          }
+        });
+      } catch (error) {
+        console.error('❌ Erro ao buscar arquivos:', error);
+      }
+    }
+
+    searchFiles(scenarioDir);
+    return { dataFiles, descriptionFiles };
+}
 
 function listFeatureFiles() {
+  if (!basePath) {
+    throw new Error('Caminho do projeto não configurado. Use setProjectPath primeiro.');
+  }
+
   const results = [];
+  const DEFAULT_CATEGORY = 'Testes Disponíveis';
 
-  function walk(dir) {
-    try {
-      fs.readdirSync(dir, { withFileTypes: true }).forEach(entry => {
-        const fullPath = path.join(dir, entry.name);
-        
-        if (entry.isDirectory()) {
-          walk(fullPath);
-        } else if (entry.name.endsWith('.feature')) {
-          // Buscar QUALQUER arquivo .feature, não apenas cotizador.feature
-          const relativeFeaturePath = fullPath.split('resources' + path.sep)[1].replace(/\\/g, '/');
-          console.log('📝 Feature encontrada:', relativeFeaturePath);
+  function isScenarioDirectory(dir) {
+    // Verifica se é um diretório de cenário procurando pela estrutura karateTests/UITests
+    return fs.existsSync(path.join(dir, 'karateTests', 'UITests'));
+  }
 
-          // Buscar arquivos de dados associados
-          const dataFiles = findDataFiles(fullPath);
+  function findFeatureFile(dir) {
+    // Primeiro tenta encontrar o arquivo padrão
+    const expectedPath = path.join(dir, 'karateTests', 'UITests', 'cotizador.feature');
+    if (fs.existsSync(expectedPath)) {
+      return expectedPath;
+    }
+
+    // Se não encontrar, procura por qualquer .feature recursivamente
+    const files = fs.readdirSync(dir, { withFileTypes: true });
+    for (const file of files) {
+      const fullPath = path.join(dir, file.name);
+      if (file.isDirectory()) {
+        const found = findFeatureFile(fullPath);
+        if (found) return found;
+      } else if (file.name.endsWith('.feature')) {
+        return fullPath;
+      }
+    }
+    return null;
+  }
+
+  function processDirectory(dir, currentPath = '') {
+    const items = fs.readdirSync(dir, { withFileTypes: true });
+    
+    for (const item of items) {
+      if (!item.isDirectory()) continue;
+
+      const fullPath = path.join(dir, item.name);
+      const relativePath = path.join(currentPath, item.name);
+
+      if (isScenarioDirectory(fullPath)) {
+        // É um diretório de cenário
+        const featureFile = findFeatureFile(fullPath);
+        if (featureFile) {
+          const relativeFeaturePath = path.relative(basePath, featureFile).replace(/\\/g, '/');
+          const pathParts = relativePath.split(path.sep);
+          const category = pathParts.length > 1 ? pathParts[0] : DEFAULT_CATEGORY;
+          
+          const { dataFiles, descriptionFiles } = findDataFiles(fullPath);
           
           results.push({
             feature: relativeFeaturePath,
-            dataFiles: dataFiles
+            scenarioName: item.name,
+            category: category,
+            dataFiles: dataFiles,
+            descriptionFiles: descriptionFiles
           });
-        }
-      });
-    } catch (error) {
-      console.error('❌ Erro ao ler diretório:', dir, error.message);
-    }
-  }
-
-  function findDataFiles(featureFilePath) {
-    const featureDir = path.dirname(featureFilePath); // .../UITests
-    const testsDir = path.dirname(featureDir); // .../karateTests
-    const dataDir = path.join(testsDir, 'data'); // .../karateTests/data
-    
-    let dataFiles = [];
-
-    try {
-      if (fs.existsSync(dataDir)) {
-        dataFiles = fs.readdirSync(dataDir)
-          .filter(file => /\.(csv|json)$/i.test(file))
-          .map(file => {
-            const fullDataPath = path.join(dataDir, file);
-            return path.relative(basePath, fullDataPath).replace(/\\/g, '/');
-          });
-
-        if (dataFiles.length > 0) {
-          console.log('  📊 Arquivos de dados:', dataFiles);
         }
       } else {
-        console.log('  ℹ️  Pasta de dados não existe:', dataDir);
+        // Continua procurando em subdiretórios
+        processDirectory(fullPath, relativePath);
       }
-    } catch (error) {
-      console.error('  ❌ Erro ao buscar dados:', error.message);
     }
-
-    return dataFiles;
   }
 
-  if (!fs.existsSync(basePath)) {
-    console.error('❌ Caminho base não existe:', basePath);
-    return [];
-  }
+  processDirectory(basePath);
+  
+  // Organiza os resultados por categoria
+  const organizedResults = results.reduce((acc, test) => {
+    if (!acc[test.category]) {
+      acc[test.category] = [];
+    }
+    acc[test.category].push(test);
+    return acc;
+  }, {});
 
-  walk(basePath);
-  console.log('🧪 Total de features encontradas:', results.length);
-  return results;
+  console.log('🧪 Total de cenários encontrados:', results.length);
+  return organizedResults;
 }
 
 async function runTests(paths) {
-  const results = [];
+  if (!projectRoot || !basePath) {
+    throw new Error('Caminho do projeto não configurado. Use setProjectPath primeiro.');
+  }
 
-  for (const featurePath of paths) {
-    console.log('🚀 Executando teste:', featurePath);
+  // Create a map to store results in the same order as paths
+  const resultsMap = new Map();
+  
+  for (const [index, featurePath] of paths.entries()) {
+    console.log(`🚀 Executando teste ${index + 1}/${paths.length}:`, featurePath);
     
-    const command = 'mvn';
+    const command = process.platform === 'win32' ? 'mvn.cmd' : 'mvn';
     const args = ['test', `-Dkarate.options=classpath:${featurePath}`];
 
     console.log('📋 Comando:', command, args.join(' '));
@@ -113,23 +185,27 @@ async function runTests(paths) {
       child.on('close', code => {
         console.log(`✅ Processo finalizado com código: ${code}`);
         
-        // Gerar caminho do relatório
         const reportBaseName = featurePath.replace(/\//g, '.').replace(/\.feature$/, '') + '.html';
         const reportPath = path.join('target', 'karate-reports', reportBaseName);
         const absoluteReportPath = path.resolve(projectRoot, reportPath);
+
+        console.log('📄 Caminho do relatório:', absoluteReportPath);
 
         if (code === 0) {
           resolve({
             success: true,
             feature: featurePath,
             report: `file://${absoluteReportPath}`,
-            output: stdout
+            output: stdout,
+            originalIndex: index // Store the original position
           });
         } else {
           resolve({
             success: false,
             feature: featurePath,
-            error: stderr || stdout || 'Erro desconhecido na execução'
+            report: `file://${absoluteReportPath}`,
+            error: stderr || stdout || 'Erro desconhecido na execução',
+            originalIndex: index
           });
         }
       });
@@ -139,15 +215,22 @@ async function runTests(paths) {
         resolve({
           success: false,
           feature: featurePath,
-          error: `Erro ao executar: ${error.message}`
+          error: `Erro ao executar: ${error.message}`,
+          originalIndex: index 
         });
       });
     });
 
-    results.push(result);
+    // Store the result with its original index
+    resultsMap.set(index, result);
   }
+
+  // Convert map back to array maintaining original order
+  const results = Array.from(resultsMap.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([_, result]) => result);
 
   return results;
 }
 
-module.exports = { listFeatureFiles, runTests };
+module.exports = { setProjectPath, listFeatureFiles, runTests };

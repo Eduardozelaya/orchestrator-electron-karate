@@ -1,16 +1,33 @@
+// Tipagens
+interface ElectronAPI {
+  selectMavenProject: () => Promise<{ success: boolean; projectRoot?: string; basePath?: string; error?: string }>;
+  getFeatureTests: () => Promise<KarateTestsResult>;
+  runTests: (paths: string[]) => Promise<TestExecutionResult[]>;
+  listDataFiles: (path: string) => Promise<string[]>;
+  readFileContent: (path: string) => Promise<string>;
+  saveCsvFile: (path: string, content: string) => Promise<void>;
+  openReport: (reportPath: string) => Promise<void>;
+  uploadFile: (path: string, content: ArrayBuffer) => Promise<void>;
+  downloadFile: (path: string) => Promise<void>;
+  deleteFile: (path: string) => Promise<void>;
+}
 
-// Tipagem para o electronAPI
 declare global {
   interface Window {
-    electronAPI?: {
-      invoke: (channel: string, ...args: any[]) => Promise<any>;
-    };
+    electronAPI?: ElectronAPI;
   }
 }
 
 interface KarateFeatureTest {
   feature: string;
+  scenarioName: string;
+  category: string;
   dataFiles: string[];
+  descriptionFiles: string[];
+}
+
+interface KarateTestsResult {
+  [category: string]: KarateFeatureTest[];
 }
 
 interface TestExecutionResult {
@@ -22,136 +39,213 @@ interface TestExecutionResult {
 }
 
 export class ElectronService {
-  private isElectronAvailable(): boolean {
-    // Verificação mais robusta para detectar Electron
+  private static instance: ElectronService;
+  private _isElectronMode: boolean;
+
+  private constructor() {
+    this._isElectronMode = this.checkElectronMode();
+  }
+
+  static getInstance(): ElectronService {
+    if (!ElectronService.instance) {
+      ElectronService.instance = new ElectronService();
+    }
+    return ElectronService.instance;
+  }
+
+  private checkElectronMode(): boolean {
     if (typeof window === 'undefined') return false;
-    
-    return !!(
-      window.electronAPI || 
-      window.require || 
-      window.process?.type === 'renderer' ||
-      navigator.userAgent.toLowerCase().includes('electron')
-    );
+    return !!window.electronAPI;
   }
 
-  async getFeatureTests(): Promise<KarateFeatureTest[]> {
-    if (!this.isElectronAvailable()) {
-      console.warn('⚠️ Electron API não disponível - retornando dados simulados');
-      // Retornar dados simulados para desenvolvimento web
-      return this.getMockFeatureTests();
-    }
-    
-    try {
-      const results = await window.electronAPI!.invoke('get-feature-tests');
-      console.log('📊 Features descobertas via Electron:', results);
-      return results || [];
-    } catch (error) {
-      console.error('❌ Erro ao obter testes via Electron:', error);
-      console.log('🔄 Fallback para dados simulados');
-      return this.getMockFeatureTests();
-    }
+  get isElectronMode(): boolean {
+    return this._isElectronMode;
   }
 
-  private getMockFeatureTests(): KarateFeatureTest[] {
-    return [
-      {
-        feature: 'clienteExistente/cotacaoCnpjInvalido/karateTests/UITests/cotizador.feature',
-        dataFiles: ['clienteExistente/cotacaoCnpjInvalido/karateTests/data/dados.csv']
-      },
-      {
-        feature: 'clientePotencial/novoCliente/karateTests/UITests/cadastro.feature',
-        dataFiles: ['clientePotencial/novoCliente/karateTests/data/clientes.csv']
-      }
-    ];
-  }
-
-  async runTests(selectedPaths: string[]): Promise<TestExecutionResult[]> {
-    if (!this.isElectronAvailable()) {
-      console.warn('⚠️ Electron não disponível - executando simulação');
-      return this.simulateTestExecution(selectedPaths);
+  async selectMavenProject(): Promise<{ success: boolean; projectRoot?: string; error?: string }> {
+    if (!this.isElectronMode) {
+      return { success: false, error: 'Electron não disponível' };
     }
 
     try {
-      const results = await window.electronAPI!.invoke('run-tests', selectedPaths);
-      console.log('🚀 Resultados da execução real:', results);
-      return results;
+      return await window.electronAPI!.selectMavenProject();
     } catch (error) {
-      console.error('❌ Erro ao executar testes via Electron:', error);
+      console.error('❌ Erro ao selecionar projeto:', error);
+      return { success: false, error: 'Erro ao selecionar projeto' };
+    }
+  }
+
+  async getFeatureTests(): Promise<KarateTestsResult> {
+    if (!this.isElectronMode) {
+      return this.getMockFeatureTests();
+    }
+
+    try {
+      return await window.electronAPI!.getFeatureTests();
+    } catch (error) {
+      console.error('❌ Erro ao obter testes:', error);
+      return this.getMockFeatureTests();
+    }
+  }
+
+  async runTests(paths: string[]): Promise<TestExecutionResult[]> {
+    if (!this.isElectronMode) {
+      return this.simulateTestExecution(paths);
+    }
+
+    try {
+      return await window.electronAPI!.runTests(paths);
+    } catch (error) {
+      console.error('❌ Erro ao executar testes:', error);
       throw error;
     }
   }
 
-  private async simulateTestExecution(selectedPaths: string[]): Promise<TestExecutionResult[]> {
-    // Simulação para desenvolvimento web
-    return selectedPaths.map(path => ({
-      success: Math.random() > 0.3,
-      feature: path,
-      report: '#',
-      output: 'Execução simulada - dados de exemplo'
-    }));
-  }
-
   async listDataFiles(featurePath: string): Promise<string[]> {
-    if (!this.isElectronAvailable()) {
-      // Retornar dados simulados baseados no path
-      if (featurePath.includes('clienteExistente')) {
-        return ['clienteExistente/cotacaoCnpjInvalido/karateTests/data/dados.csv'];
-      }
-      return ['clientePotencial/novoCliente/karateTests/data/clientes.csv'];
+    if (!this.isElectronMode) {
+      return this.getMockDataFiles(featurePath);
     }
 
     try {
-      const files = await window.electronAPI!.invoke('list-data-files', featurePath);
-      return files || [];
+      return await window.electronAPI!.listDataFiles(featurePath);
     } catch (error) {
-      console.error('❌ Erro ao listar arquivos de dados:', error);
+      console.error('❌ Erro ao listar arquivos:', error);
       return [];
     }
   }
 
-  async readFileContent(relativePath: string): Promise<string> {
-    if (!this.isElectronAvailable()) {
-      // Conteúdo simulado para desenvolvimento web
-      return this.getMockCsvContent();
+  async readFileContent(path: string): Promise<string> {
+    if (!this.isElectronMode) {
+      return this.getMockFileContent();
     }
-
+  
+    if (!path || typeof path !== 'string') {
+      console.error('❌ Caminho inválido para leitura:', path);
+      return '';
+    }
+  
     try {
-      const content = await window.electronAPI!.invoke('read-file-content', relativePath);
-      return content;
+      return await window.electronAPI!.readFileContent(path);
     } catch (error) {
       console.error('❌ Erro ao ler arquivo:', error);
-      return this.getMockCsvContent();
+      return '';
     }
   }
-
-  private getMockCsvContent(): string {
-    return `nome,cnpj,email,telefone
-João Silva,12.345.678/0001-90,joao@empresa.com,11999999999
-Maria Santos,98.765.432/0001-10,maria@empresa.com,11888888888`;
+  
+  async saveCsvFile(path: string, content: string): Promise<void> {
+    if (!this.isElectronMode) {
+      console.warn('Modo Electron não disponível — simulação de salvamento');
+      return;
+    }
+  
+    try {
+      await window.electronAPI!.saveCsvFile(path, content);
+    } catch (error) {
+      console.error('❌ Erro ao salvar arquivo CSV:', error);
+      throw error;
+    }
   }
-
-  async saveCsvFile(relativePath: string, content: string): Promise<string> {
-    if (!this.isElectronAvailable()) {
-      console.log('💾 Salvamento simulado do arquivo:', relativePath);
-      return 'Arquivo salvo com sucesso (simulado)';
+  
+  async openReport(reportPath: string): Promise<void> {
+    if (!this.isElectronMode) {
+      console.warn('Modo Electron não disponível — simulação de abertura de relatório');
+      return;
+    }
+  
+    try {
+      // Remover prefixo "file://" se presente
+      const cleanPath = reportPath.replace(/^file:\/+/, '');
+      await window.electronAPI!.openReport(cleanPath);
+    } catch (error) {
+      console.error('❌ Erro ao abrir relatório:', error);
+    }
+  }
+  
+  async uploadFile(path: string, file: File): Promise<void> {
+    if (!this.isElectronMode) {
+      console.warn('Modo Electron não disponível');
+      return;
     }
 
     try {
-      const result = await window.electronAPI!.invoke('save-csv-file', {
-        path: relativePath,
-        content: content
-      });
-      return result;
+      const buffer = await file.arrayBuffer();
+      await window.electronAPI!.uploadFile(path, buffer);
     } catch (error) {
-      console.error('❌ Erro ao salvar arquivo:', error);
+      console.error('❌ Erro ao fazer upload do arquivo:', error);
       throw error;
     }
   }
 
-  // Método público para verificar se está no modo Electron
-  public get isElectronMode(): boolean {
-    return this.isElectronAvailable();
+  async downloadFile(path: string): Promise<void> {
+    if (!this.isElectronMode) {
+      console.warn('Modo Electron não disponível');
+      return;
+    }
+
+    try {
+      await window.electronAPI!.downloadFile(path);
+    } catch (error) {
+      console.error('❌ Erro ao fazer download do arquivo:', error);
+      throw error;
+    }
+  }
+
+  async deleteFile(path: string): Promise<void> {
+    if (!this.isElectronMode) {
+      console.warn('Modo Electron não disponível');
+      return;
+    }
+
+    try {
+      await window.electronAPI!.deleteFile(path);
+    } catch (error) {
+      console.error('❌ Erro ao deletar arquivo:', error);
+      throw error;
+    }
+  }
+
+  // Métodos privados para mock data
+  private getMockFeatureTests(): KarateTestsResult {
+    return {
+      'Cliente Existente': [
+        {
+          feature: 'clienteExistente/cotacaoCnpj/karateTests/UITests/cotizador.feature',
+          scenarioName: 'cotacaoCnpj',
+          category: 'Cliente Existente',
+          dataFiles: ['clienteExistente/cotacaoCnpj/data/dados.csv'],
+          descriptionFiles: []
+        }
+      ],
+      'Testes Disponíveis': [
+        {
+          feature: 'cenarioSimples/karateTests/UITests/cotizador.feature',
+          scenarioName: 'cenarioSimples',
+          category: 'Testes Disponíveis',
+          dataFiles: ['cenarioSimples/data/dados.csv'],
+          descriptionFiles: []
+        }
+      ]
+    };
+  }
+
+  private getMockDataFiles(featurePath: string): string[] {
+    return [`${featurePath.replace('.feature', '')}/data/mock.csv`];
+  }
+
+  private getMockFileContent(): string {
+    return 'id,nome,valor\n1,Teste 1,100\n2,Teste 2,200';
+  }
+
+  private simulateTestExecution(paths: string[]): Promise<TestExecutionResult[]> {
+    return Promise.resolve(
+      paths.map(path => ({
+        success: Math.random() > 0.2,
+        feature: path,
+        report: 'mock-report.html',
+        output: 'Execução simulada concluída'
+      }))
+    );
   }
 }
 
-export const electronService = new ElectronService();
+export const electronService = ElectronService.getInstance();

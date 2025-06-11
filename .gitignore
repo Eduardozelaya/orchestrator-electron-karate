@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Bun
+bun.lockb
+
+# Testes e relatórios
+karate-reports/
+target/

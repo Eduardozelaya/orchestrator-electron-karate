@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import {
   Sheet,
@@ -13,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { File, Save, X } from 'lucide-react';
 import { electronService } from '@/services/electronService';
 import { toast } from 'sonner';
+import { Skeleton } from '@/components/ui/skeleton';
 
 interface DataFileViewerProps {
   isOpen: boolean;
@@ -35,6 +35,7 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
   const fileName = dataFile.split('/').pop() || '';
   const isCSV = fileName.endsWith('.csv');
   const isJSON = fileName.endsWith('.json');
+  const isDescriptionFile = dataFile.includes('/description/');
 
   useEffect(() => {
     if (isOpen && dataFile) {
@@ -45,23 +46,30 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
   const loadFileContent = async () => {
     setIsLoading(true);
     try {
+      console.log('📂 Lendo conteúdo de:', dataFile);
+      if (!dataFile) {
+        throw new Error('Caminho do arquivo de dados não fornecido');
+      }
       const fileContent = await electronService.readFileContent(dataFile);
       setContent(fileContent);
       setOriginalContent(fileContent);
     } catch (error) {
       toast.error('Erro ao carregar arquivo');
-      console.error('Erro ao carregar arquivo:', error);
+      console.error('❌ Erro ao carregar arquivo:', error);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleSave = async () => {
+    if (isDescriptionFile) return; // Não permite salvar arquivos de descrição
+    
     setIsSaving(true);
     try {
       await electronService.saveCsvFile(dataFile, content);
       setOriginalContent(content);
       toast.success('Arquivo salvo com sucesso!');
+      await loadFileContent();
     } catch (error) {
       toast.error('Erro ao salvar arquivo');
       console.error('Erro ao salvar arquivo:', error);
@@ -70,7 +78,7 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
     }
   };
 
-  const hasChanges = content !== originalContent;
+  const hasChanges = content !== originalContent && !isDescriptionFile;
 
   const formatContent = () => {
     if (isCSV) {
@@ -106,9 +114,14 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
           <SheetTitle className="flex items-center gap-2">
             <File className="h-5 w-5" />
             {fileName}
+            {isDescriptionFile && (
+              <Badge variant="secondary" className="bg-blue-100 text-blue-700">
+                Arquivo de Descrição
+              </Badge>
+            )}
           </SheetTitle>
           <SheetDescription>
-            Arquivo de dados do teste {testId}
+            {isDescriptionFile ? 'Visualização da descrição do teste' : `Arquivo de dados do teste ${testId}`}
           </SheetDescription>
         </SheetHeader>
 
@@ -124,54 +137,67 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
                 </Badge>
               )}
             </div>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setContent(originalContent);
-                  toast.info('Alterações descartadas');
-                }}
-                disabled={!hasChanges}
-              >
-                <X className="h-4 w-4 mr-1" />
-                Descartar
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleSave}
-                disabled={!hasChanges || isSaving}
-                className="bg-green-600 hover:bg-green-700"
-              >
-                <Save className="h-4 w-4 mr-1" />
-                {isSaving ? 'Salvando...' : 'Salvar'}
-              </Button>
-            </div>
+            {!isDescriptionFile && (
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setContent(originalContent);
+                    toast.info('Alterações descartadas');
+                  }}
+                  disabled={!hasChanges}
+                >
+                  <X className="h-4 w-4 mr-1" />
+                  Descartar
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleSave}
+                  disabled={!hasChanges || isSaving}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  <Save className="h-4 w-4 mr-1" />
+                  {isSaving ? 'Salvando...' : 'Salvar'}
+                </Button>
+              </div>
+            )}
           </div>
 
           {isLoading ? (
-            <div className="flex items-center justify-center h-64">
-              <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            <div className="space-y-2">
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-3/4" />
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Preview do conteúdo */}
-              <div className="border rounded-lg p-4 bg-slate-50 max-h-64 overflow-auto">
-                <h4 className="font-medium mb-2">Preview:</h4>
-                {formatContent()}
+              {/* Preview Section */}
+              <div>
+                <h4 className="text-sm font-medium text-slate-700 mb-2">
+                  {isDescriptionFile ? 'Conteúdo da Descrição:' : 'Preview:'}
+                </h4>
+                <div className={`border rounded-lg p-4 overflow-auto max-h-[30vh] ${
+                  isDescriptionFile ? 'bg-slate-50' : 'bg-white'
+                }`}>
+                  {formatContent()}
+                </div>
               </div>
 
-              {/* Editor de texto */}
-              <div>
-                <h4 className="font-medium mb-2">Editar conteúdo:</h4>
-                <Textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  rows={15}
-                  className="font-mono text-sm"
-                  placeholder="Conteúdo do arquivo..."
-                />
-              </div>
+              {/* Edit Section - Only for data files */}
+              {!isDescriptionFile && (
+                <div>
+                  <h4 className="text-sm font-medium text-slate-700 mb-2">Editar:</h4>
+                  <div className="border rounded-lg bg-white">
+                    <Textarea
+                      value={content}
+                      onChange={(e) => setContent(e.target.value)}
+                      className="font-mono text-sm w-full min-h-[200px] border-none focus-visible:ring-0"
+                      placeholder="Edite o conteúdo aqui..."
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

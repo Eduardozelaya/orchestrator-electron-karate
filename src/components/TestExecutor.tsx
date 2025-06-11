@@ -6,6 +6,7 @@ import { Separator } from '@/components/ui/separator';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Play, Square, Clock, CheckCircle, XCircle, AlertCircle, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
+import { electronService } from '@/services/electronService';
 
 interface KarateTest {
   id: string;
@@ -17,10 +18,16 @@ interface KarateTest {
   dataFiles?: string[];
 }
 
+interface TestExecutionResult {
+  success: boolean;
+  report?: string;
+  error?: string;
+  duration?: number;
+}
+
 interface TestExecutorProps {
   selectedTests: string[];
   tests: KarateTest[];
-  onExecute: () => void;
   isElectronMode?: boolean;
 }
 
@@ -36,12 +43,12 @@ interface ExecutionResult {
 const TestExecutor: React.FC<TestExecutorProps> = ({
   selectedTests,
   tests,
-  onExecute,
   isElectronMode = false
 }) => {
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResults, setExecutionResults] = useState<ExecutionResult[]>([]);
   const [progress, setProgress] = useState(0);
+  const [generalReportUrl, setGeneralReportUrl] = useState<string | null>(null);
 
   const selectedTestObjects = tests.filter(test => selectedTests.includes(test.id));
 
@@ -55,15 +62,17 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
     setProgress(0);
     setExecutionResults([]);
     
-    if (!isElectronMode) {
-      toast.warning('Execução simulada - Use o modo Electron para execução real');
-      await simulateExecution();
-    } else {
-      toast.success(`Iniciando execução de ${selectedTests.length} teste(s) no Karate`);
-      await executeRealTests();
+    try {
+      if (!isElectronMode) {
+        toast.warning('Execução simulada - Use o modo Electron para execução real');
+        await simulateExecution();
+      } else {
+        toast.success(`Iniciando execução de ${selectedTests.length} teste(s) no Karate`);
+        await executeRealTests();
+      }
+    } finally {
+      setIsExecuting(false);
     }
-
-    onExecute();
   };
 
   const simulateExecution = async () => {
@@ -101,25 +110,36 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
 
       setProgress(((i + 1) / selectedTests.length) * 100);
     }
-
-    setIsExecuting(false);
   };
 
   const executeRealTests = async () => {
     try {
-      const { electronService } = await import('@/services/electronService');
+      // Criar um mapa dos testes selecionados para manter a ordem
+      const selectedTestsMap = new Map(
+        selectedTests.map((testId, index) => [testId, index])
+      );
       
-      const selectedPaths = selectedTestObjects.map(test => test.path);
-      
+      // Inicializar resultados na ordem dos testes selecionados
       setExecutionResults(
         selectedTests.map(testId => ({ testId, status: 'pending' as const }))
       );
 
+      // Executar os testes mantendo a ordem original
+      const selectedPaths = selectedTests.map(testId => {
+        const test = tests.find(t => t.id === testId);
+        return test?.path || '';
+      });
+
       const results = await electronService.runTests(selectedPaths);
       
-      const processedResults = selectedTests.map((testId, index) => {
-        const test = tests.find(t => t.id === testId);
-        const electronResult = results[index];
+      if (results.length > 0 && results[0].report) {
+        setGeneralReportUrl(results[0].report);
+      }
+
+      // Processar resultados mantendo a ordem original dos testes selecionados
+      const processedResults = selectedTests.map(testId => {
+        const originalIndex = selectedTestsMap.get(testId);
+        const electronResult = results[originalIndex] as TestExecutionResult;
         
         if (!electronResult) {
           return {
@@ -134,7 +154,7 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
           status: electronResult.success ? 'passed' as const : 'failed' as const,
           reportUrl: electronResult.report,
           error: electronResult.error,
-          duration: 0 // Duração não disponível no formato atual
+          duration: electronResult.duration || 0
         };
       });
 
@@ -161,8 +181,6 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
           error: 'Erro na execução'
         }))
       );
-    } finally {
-      setIsExecuting(false);
     }
   };
 
@@ -172,10 +190,26 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
   };
 
   const handleOpenReport = (reportUrl: string) => {
-    if (reportUrl) {
-      window.open(reportUrl, '_blank');
+    if (!reportUrl) return;
+  
+    if (isElectronMode) {
+      electronService.openReport(reportUrl);
+    } else {
+      window.open(reportUrl, '_blank'); // modo web (talvez simulado)
     }
   };
+
+  const handleOpenAllReports = () => {
+    // Filter out results with valid report URLs and open them
+    executionResults
+      .filter(result => result.reportUrl)
+      .forEach(result => {
+        if (result.reportUrl) {
+          handleOpenReport(result.reportUrl);
+        }
+      });
+  };
+  
 
   const getStatusIcon = (status: ExecutionResult['status']) => {
     switch (status) {
@@ -232,36 +266,34 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
         <Separator />
 
         {/* Execution Button */}
-        <div className="space-y-3">
-          {!isExecuting ? (
-            <Button 
-              onClick={handleExecute}
-              disabled={selectedTests.length === 0}
-              className="w-full bg-green-600 hover:bg-green-700"
-            >
-              <Play className="h-4 w-4 mr-2" />
-              {isElectronMode ? 'Executar com Karate' : 'Simular Execução'}
-            </Button>
-          ) : (
-            <Button 
-              onClick={handleStop}
-              variant="destructive"
-              className="w-full"
-            >
-              <Square className="h-4 w-4 mr-2" />
-              Parar Execução
-            </Button>
-          )}
+        {!isExecuting ? (
+          <Button 
+            onClick={handleExecute}
+            disabled={selectedTests.length === 0}
+            className="w-full bg-green-600 hover:bg-green-700"
+          >
+            <Play className="h-4 w-4 mr-2" />
+            {isElectronMode ? 'Executar com Karate' : 'Simular Execução'}
+          </Button>
+        ) : (
+          <Button 
+            onClick={handleStop}
+            variant="destructive"
+            className="w-full"
+          >
+            <Square className="h-4 w-4 mr-2" />
+            Parar Execução
+          </Button>
+        )}
 
-          {isExecuting && (
-            <div className="space-y-2">
-              <Progress value={progress} className="w-full" />
-              <p className="text-xs text-center text-slate-600">
-                {Math.round(progress)}% concluído
-              </p>
-            </div>
-          )}
-        </div>
+        {isExecuting && (
+          <div className="space-y-2">
+            <Progress value={progress} className="w-full" />
+            <p className="text-xs text-center text-slate-600">
+              {Math.round(progress)}% concluído
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Execution Results */}
@@ -269,7 +301,20 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
         <Card className="mt-4">
           <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center justify-between">
-              <span>Resultados da Execução</span>
+              <div className="flex items-center gap-2">
+                <span>Resultados da Execução</span>
+                {executionResults.some(r => r.reportUrl) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleOpenAllReports}
+                    className="h-6 px-2 text-xs hover:bg-slate-100"
+                  >
+                    <ExternalLink className="h-3 w-3 mr-1" />
+                    Ver Relatório Completo
+                  </Button>
+                )}
+              </div>
               {totalDuration > 0 && (
                 <Badge variant="outline" className="text-xs">
                   {(totalDuration / 1000).toFixed(1)}s total
@@ -278,8 +323,12 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {executionResults.map((result) => {
-              const test = tests.find(t => t.id === result.testId);
+            {/* Garantir que os resultados são exibidos na mesma ordem dos testes selecionados */}
+            {selectedTests.map(testId => {
+              const result = executionResults.find(r => r.testId === testId);
+              if (!result) return null;
+              
+              const test = tests.find(t => t.id === testId);
               return (
                 <div key={result.testId} className="border rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between">
@@ -298,37 +347,16 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
                           size="sm"
                           variant="outline"
                           onClick={() => handleOpenReport(result.reportUrl!)}
-                          className="h-6 px-2 text-xs"
+                          className="h-6 px-2 text-xs flex items-center gap-1"
                         >
-                          <ExternalLink className="h-3 w-3 mr-1" />
-                          Relatório
+                          <ExternalLink className="h-3 w-3" />
+                          Karate Log
                         </Button>
                       )}
                     </div>
                   </div>
                   
-                  {result.error && (
-                    <div className="ml-6 text-xs text-red-600 bg-red-50 p-2 rounded">
-                      {result.error}
-                    </div>
-                  )}
                   
-                  {result.scenarios && result.scenarios.length > 0 && (
-                    <div className="ml-6 space-y-1">
-                      {result.scenarios.map((scenario, index) => (
-                        <div key={index} className="flex items-center gap-2 text-xs">
-                          {scenario.status === 'passed' ? (
-                            <CheckCircle className="h-3 w-3 text-green-600" />
-                          ) : (
-                            <XCircle className="h-3 w-3 text-red-600" />
-                          )}
-                          <span className={scenario.status === 'passed' ? 'text-green-700' : 'text-red-700'}>
-                            {scenario.name}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
               );
             })}
