@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -49,33 +49,9 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
   const [executionResults, setExecutionResults] = useState<ExecutionResult[]>([]);
   const [progress, setProgress] = useState(0);
   const [generalReportUrl, setGeneralReportUrl] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [projectPath, setProjectPath] = useState('');
 
   const selectedTestObjects = tests.filter(test => selectedTests.includes(test.id));
-
-  const handleLoadTests = async () => {
-    setIsLoading(true);
-    try {
-      if (isElectronMode) {
-        const projectResult = await electronService.selectMavenProject();
-        if (!projectResult.success) {
-          throw new Error(projectResult.error);
-        }
-        setProjectPath(projectResult.projectRoot || '');
-        // Limpa os resultados quando um novo projeto é carregado
-        setExecutionResults([]);
-        setProgress(0);
-        
-        await refreshTests();
-      }
-    } catch (error) {
-      console.error('Erro ao carregar cenários:', error);
-      toast.error(error instanceof Error ? error.message : 'Erro ao carregar cenários');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleExecute = async () => {
     if (selectedTests.length === 0) {
@@ -292,19 +268,6 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
     .filter(r => r.duration)
     .reduce((sum, r) => sum + (r.duration || 0), 0);
 
-  const refreshTests = async () => {
-    try {
-      if (isElectronMode) {
-        const tests = await electronService.getFeatureTests();
-        // Aqui você pode emitir um evento ou chamar uma função para atualizar a lista de testes
-        // dependendo de como sua aplicação está estruturada
-      }
-    } catch (error) {
-      console.error('Erro ao atualizar testes:', error);
-      toast.error('Erro ao atualizar lista de testes');
-    }
-  };
-
   return (
     <div className="space-y-4">
       {/* Execution Controls */}
@@ -315,17 +278,6 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
             {selectedTests.length} teste(s)
           </Badge>
         </div>
-
-        {/* Project Selection Button */}
-        <Button 
-          onClick={handleLoadTests}
-          variant="outline"
-          className="w-full"
-          disabled={isLoading}
-        >
-          <FolderOpen className="h-4 w-4 mr-2" />
-          {isLoading ? 'Carregando...' : 'Selecionar Projeto Karate'}
-        </Button>
 
         {/* Mode Indicator */}
         <div className="text-xs p-2 rounded border">
