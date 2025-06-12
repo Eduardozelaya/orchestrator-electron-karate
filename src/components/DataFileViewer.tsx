@@ -27,6 +27,7 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
   testId,
   dataFile
 }) => {
+  const [header, setHeader] = useState('');
   const [content, setContent] = useState('');
   const [originalContent, setOriginalContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -51,8 +52,15 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
         throw new Error('Caminho do arquivo de dados não fornecido');
       }
       const fileContent = await electronService.readFileContent(dataFile);
-      setContent(fileContent);
-      setOriginalContent(fileContent);
+      
+      // Separa o cabeçalho do conteúdo
+      const lines = fileContent.split('\n');
+      const headerLine = lines[0] || '';
+      const contentLines = lines.slice(1).join('\n');
+      
+      setHeader(headerLine);
+      setContent(contentLines);
+      setOriginalContent(contentLines);
     } catch (error) {
       toast.error('Erro ao carregar arquivo');
       console.error('❌ Erro ao carregar arquivo:', error);
@@ -66,7 +74,9 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
     
     setIsSaving(true);
     try {
-      await electronService.saveCsvFile(dataFile, content);
+      // Combina o cabeçalho com o conteúdo editado
+      const fullContent = `${header}\n${content}`;
+      await electronService.saveCsvFile(dataFile, fullContent);
       setOriginalContent(content);
       toast.success('Arquivo salvo com sucesso!');
       await loadFileContent();
@@ -82,29 +92,42 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
 
   const formatContent = () => {
     if (isCSV) {
-      // Formatação simples para CSV
-      return content.split('\n').map((line, index) => (
-        <div key={index} className="font-mono text-sm border-b border-slate-200 py-1">
-          {line.split(',').map((cell, cellIndex) => (
-            <span key={cellIndex} className="inline-block min-w-[100px] px-2 border-r border-slate-200">
-              {cell}
-            </span>
+      // Formatação para CSV com cabeçalho destacado
+      return (
+        <div className="space-y-1">
+          {/* Cabeçalho */}
+          <div className="font-mono text-sm border-b-2 border-slate-300 py-1 bg-slate-50 overflow-x-auto whitespace-nowrap">
+            {header.split(',').map((cell, cellIndex) => (
+              <span key={cellIndex} className="inline-block min-w-[100px] px-2 border-r border-slate-200 font-semibold">
+                {cell}
+              </span>
+            ))}
+          </div>
+          {/* Conteúdo */}
+          {content.split('\n').map((line, index) => (
+            <div key={index} className="font-mono text-sm border-b border-slate-200 py-1 overflow-x-auto whitespace-nowrap">
+              {line.split(',').map((cell, cellIndex) => (
+                <span key={cellIndex} className="inline-block min-w-[100px] px-2 border-r border-slate-200">
+                  {cell}
+                </span>
+              ))}
+            </div>
           ))}
         </div>
-      ));
+      );
     } else if (isJSON) {
       try {
-        const parsed = JSON.parse(content);
+        const parsed = JSON.parse(header + '\n' + content);
         return (
           <pre className="font-mono text-sm whitespace-pre-wrap">
             {JSON.stringify(parsed, null, 2)}
           </pre>
         );
       } catch {
-        return <pre className="font-mono text-sm whitespace-pre-wrap">{content}</pre>;
+        return <pre className="font-mono text-sm whitespace-pre-wrap">{header + '\n' + content}</pre>;
       }
     }
-    return <pre className="font-mono text-sm whitespace-pre-wrap">{content}</pre>;
+    return <pre className="font-mono text-sm whitespace-pre-wrap">{header + '\n' + content}</pre>;
   };
 
   return (
@@ -188,7 +211,14 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
               {!isDescriptionFile && (
                 <div>
                   <h4 className="text-sm font-medium text-slate-700 mb-2">Editar:</h4>
-                  <div className="border rounded-lg bg-white">
+                  <div className="border rounded-lg bg-white space-y-2">
+                    {/* Cabeçalho não editável */}
+                    <div className="p-2 bg-slate-50 border-b overflow-x-auto">
+                      <div className="font-mono text-sm text-slate-600 whitespace-nowrap">
+                        {header}
+                      </div>
+                    </div>
+                    {/* Conteúdo editável */}
                     <Textarea
                       value={content}
                       onChange={(e) => setContent(e.target.value)}

@@ -5,7 +5,7 @@ interface ElectronAPI {
   runTests: (paths: string[]) => Promise<TestExecutionResult[]>;
   listDataFiles: (path: string) => Promise<string[]>;
   readFileContent: (path: string) => Promise<string>;
-  saveCsvFile: (path: string, content: string) => Promise<void>;
+  saveCsvFile: (args: { path: string; content: string }) => Promise<void>;
   openReport: (reportPath: string) => Promise<void>;
   uploadFile: (path: string, content: ArrayBuffer) => Promise<void>;
   downloadFile: (path: string) => Promise<void>;
@@ -140,7 +140,7 @@ export class ElectronService {
     }
   
     try {
-      await window.electronAPI!.saveCsvFile(path, content);
+      await window.electronAPI!.saveCsvFile({ path, content });
     } catch (error) {
       console.error('❌ Erro ao salvar arquivo CSV:', error);
       throw error;
