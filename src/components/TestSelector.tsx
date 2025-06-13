@@ -90,18 +90,79 @@ const TestSelector: React.FC<TestSelectorProps> = ({
     }
   };
 
+  const formatCSVContent = (content: string): string => {
+    try {
+      // Divide o conteúdo em linhas e remove linhas vazias
+      const lines = content.split('\n').filter(line => line.trim());
+      
+      // Para cada linha, divide por vírgula e limpa os espaços em branco
+      const formattedLines = lines.map(line => 
+        line.split(',')
+          .map(cell => cell.trim())
+          .join(',')
+      );
+
+      // Junta todas as linhas com quebra de linha
+      return formattedLines.join('\n');
+    } catch (error) {
+      console.error('Erro ao formatar CSV:', error);
+      return content;
+    }
+  };
+
   const handleFileUpload = async (testId: string, file: File, type: 'data' | 'description') => {
     try {
       const test = tests.find(t => t.id === testId);
       if (!test) return;
 
-      const scenarioPath = test.path.split('/karateTests')[0];
-      const folderPath = type === 'data' ? 'data' : 'description';
-      const targetPath = `${scenarioPath}/karateTests/${folderPath}/${file.name}`;
+      // Encontra o arquivo existente com a mesma extensão
+      const existingFiles = type === 'data' ? test.dataFiles : test.descriptionFiles;
+      const fileExtension = file.name.split('.').pop()?.toLowerCase();
+      const existingFile = existingFiles?.find(f => f.toLowerCase().endsWith(`.${fileExtension}`));
 
-      await electronService.uploadFile(targetPath, file);
-      toast.success('Arquivo enviado com sucesso!');
-      onRefresh?.();
+      let targetPath;
+      if (existingFile) {
+        // Se existe um arquivo com a mesma extensão, vamos usar seu nome
+        targetPath = existingFile;
+        console.log('📂 Atualizando arquivo existente:', existingFile);
+      } else {
+        // Se não encontrou, usa o nome original do arquivo que está sendo feito upload
+        const scenarioPath = test.path.split('/karateTests')[0];
+        const folderPath = type === 'data' ? 'data' : 'description';
+        targetPath = `${scenarioPath}/karateTests/${folderPath}/${file.name}`;
+        console.log('📂 Criando novo arquivo:', targetPath);
+      }
+
+      // Lê o conteúdo do arquivo enviado
+      const fileContent = await file.text();
+      
+      // Formata o conteúdo se for um arquivo CSV
+      const isCSV = file.name.toLowerCase().endsWith('.csv');
+      const formattedContent = isCSV ? formatCSVContent(fileContent) : fileContent;
+
+      console.log('📂 Salvando arquivo em:', targetPath);
+      console.log('📂 Conteúdo formatado:', formattedContent);
+
+      if (existingFile) {
+        // Se estamos atualizando um arquivo existente, vamos usar o caminho dele
+        await electronService.saveCsvFile({
+          path: existingFile,
+          content: formattedContent
+        });
+      } else {
+        // Se é um novo arquivo, usamos o novo caminho
+        await electronService.saveCsvFile({
+          path: targetPath,
+          content: formattedContent
+        });
+      }
+      
+      // Força uma atualização imediata dos dados
+      if (onRefresh) {
+        await onRefresh();
+      }
+      
+      toast.success(existingFile ? 'Arquivo atualizado com sucesso!' : 'Novo arquivo criado com sucesso!');
     } catch (error) {
       console.error('Erro ao enviar arquivo:', error);
       toast.error('Erro ao enviar arquivo');

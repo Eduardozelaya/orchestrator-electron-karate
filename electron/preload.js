@@ -7,8 +7,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listDataFiles: (path) => ipcRenderer.invoke('list-data-files', path),
   readFileContent: (path) => ipcRenderer.invoke('read-file-content', path),
   openReport: (reportPath) => ipcRenderer.invoke('open-report', reportPath),
-  saveCsvFile: (path, content) => ipcRenderer.invoke('save-csv-file', path, content),
-  uploadFile: (path, content) => ipcRenderer.invoke('upload-file', path, content),
+  saveCsvFile: (args) => ipcRenderer.invoke('save-csv-file', args),
+  uploadFile: (args) => ipcRenderer.invoke('upload-file', args),
   downloadFile: (path) => ipcRenderer.invoke('download-file', path),
   deleteFile: (path) => ipcRenderer.invoke('delete-file', path),
   stopTestExecution: () => ipcRenderer.invoke('stop-test-execution')

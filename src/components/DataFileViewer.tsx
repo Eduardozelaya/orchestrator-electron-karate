@@ -9,7 +9,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { File, Save, X } from 'lucide-react';
+import { File, Save } from 'lucide-react';
 import { electronService } from '@/services/electronService';
 import { toast } from 'sonner';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -31,6 +31,7 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
   const [originalContent, setOriginalContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState(Date.now());
 
   const fileName = dataFile.split('/').pop() || '';
   const isCSV = fileName.endsWith('.csv');
@@ -41,7 +42,7 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
     if (isOpen && dataFile) {
       loadFileContent();
     }
-  }, [isOpen, dataFile]);
+  }, [isOpen, dataFile, lastUpdate]);
 
   const loadFileContent = async () => {
     setIsLoading(true);
@@ -61,15 +62,48 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
     }
   };
 
+  const formatCSVContent = (content: string): string => {
+    if (!isCSV) return content;
+
+    try {
+      // Divide o conteúdo em linhas e remove linhas vazias
+      const lines = content.split('\n').filter(line => line.trim());
+      
+      // Para cada linha, divide por vírgula e limpa os espaços em branco
+      const formattedLines = lines.map(line => 
+        line.split(',')
+          .map(cell => cell.trim())
+          .join(',')
+      );
+
+      // Junta todas as linhas com quebra de linha
+      return formattedLines.join('\n');
+    } catch (error) {
+      console.error('Erro ao formatar CSV:', error);
+      return content;
+    }
+  };
+
   const handleSave = async () => {
-    if (isDescriptionFile) return; // Não permite salvar arquivos de descrição
+    if (isDescriptionFile) return;
     
     setIsSaving(true);
     try {
-      await electronService.saveCsvFile(dataFile, content);
-      setOriginalContent(content);
+      // Formata o conteúdo antes de salvar
+      const formattedContent = formatCSVContent(content);
+      
+      console.log('📂 Salvando arquivo em:', dataFile);
+      console.log('📂 Conteúdo formatado:', formattedContent);
+
+      await electronService.saveCsvFile({
+        path: dataFile,
+        content: formattedContent
+      });
+      
+      setOriginalContent(formattedContent);
+      setContent(formattedContent);
+      setLastUpdate(Date.now());
       toast.success('Arquivo salvo com sucesso!');
-      await loadFileContent();
     } catch (error) {
       toast.error('Erro ao salvar arquivo');
       console.error('Erro ao salvar arquivo:', error);
@@ -82,7 +116,6 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
 
   const formatContent = () => {
     if (isCSV) {
-      // Formatação simples para CSV
       return content.split('\n').map((line, index) => (
         <div key={index} className="font-mono text-sm border-b border-slate-200 py-1">
           {line.split(',').map((cell, cellIndex) => (
@@ -138,66 +171,48 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
               )}
             </div>
             {!isDescriptionFile && (
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setContent(originalContent);
-                    toast.info('Alterações descartadas');
-                  }}
-                  disabled={!hasChanges}
-                >
-                  <X className="h-4 w-4 mr-1" />
-                  Descartar
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleSave}
-                  disabled={!hasChanges || isSaving}
-                  className="bg-green-600 hover:bg-green-700"
-                >
-                  <Save className="h-4 w-4 mr-1" />
-                  {isSaving ? 'Salvando...' : 'Salvar'}
-                </Button>
-              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSave}
+                disabled={!hasChanges || isSaving}
+              >
+                {isSaving ? (
+                  <>
+                    <Skeleton className="h-4 w-4 mr-2" />
+                    Salvando...
+                  </>
+                ) : (
+                  <>
+                    <Save className="h-4 w-4 mr-2" />
+                    Salvar Alterações
+                  </>
+                )}
+              </Button>
             )}
           </div>
 
           {isLoading ? (
             <div className="space-y-2">
               <Skeleton className="h-4 w-full" />
-              <Skeleton className="h-4 w-full" />
               <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-4 w-1/2" />
             </div>
           ) : (
-            <div className="space-y-4">
-              {/* Preview Section */}
-              <div>
-                <h4 className="text-sm font-medium text-slate-700 mb-2">
-                  {isDescriptionFile ? 'Conteúdo da Descrição:' : 'Preview:'}
-                </h4>
-                <div className={`border rounded-lg p-4 overflow-auto max-h-[30vh] ${
-                  isDescriptionFile ? 'bg-slate-50' : 'bg-white'
-                }`}>
-                  {formatContent()}
-                </div>
-              </div>
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="font-mono text-sm min-h-[300px]"
+              readOnly={isDescriptionFile}
+            />
+          )}
 
-              {/* Edit Section - Only for data files */}
-              {!isDescriptionFile && (
-                <div>
-                  <h4 className="text-sm font-medium text-slate-700 mb-2">Editar:</h4>
-                  <div className="border rounded-lg bg-white">
-                    <Textarea
-                      value={content}
-                      onChange={(e) => setContent(e.target.value)}
-                      className="font-mono text-sm w-full min-h-[200px] border-none focus-visible:ring-0"
-                      placeholder="Edite o conteúdo aqui..."
-                    />
-                  </div>
-                </div>
-              )}
+          {!isLoading && (content || isDescriptionFile) && (
+            <div className="border rounded-lg p-4 bg-slate-50">
+              <p className="text-sm font-medium text-slate-700 mb-2">Visualização formatada:</p>
+              <div className="overflow-x-auto">
+                {formatContent()}
+              </div>
             </div>
           )}
         </div>

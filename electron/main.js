@@ -81,8 +81,7 @@ function createWindow() {
   });
 
   ipcMain.handle('save-csv-file', async (_, args) => {
-    const { relativePath, path: filePathParam, content } = args;
-    const filePath = relativePath || filePathParam;
+    const { path: filePath, content } = args;
 
     if (!filePath || typeof filePath !== 'string') {
       throw new Error('Invalid file path provided');
@@ -159,23 +158,28 @@ function createWindow() {
     }
 
     try {
-      const basePath = path.join(projectPath, 'src', 'test', 'resources');
-      // Normaliza o caminho para usar separadores corretos do sistema
-      const normalizedPath = filePath.split('/').join(path.sep);
-      const targetPath = path.resolve(basePath, normalizedPath);
+      // Se o caminho já é absoluto (começa com o projectPath), usa ele diretamente
+      // Caso contrário, resolve em relação ao diretório base do projeto
+      const targetPath = filePath.startsWith(projectPath) 
+        ? filePath 
+        : path.resolve(projectPath, filePath);
+
       const dir = path.dirname(targetPath);
       
-      console.log('📂 Caminho base:', basePath);
-      console.log('📂 Caminho do arquivo:', normalizedPath);
+      console.log('📂 Caminho do projeto:', projectPath);
+      console.log('📂 Caminho do arquivo:', filePath);
       console.log('📂 Caminho completo:', targetPath);
       console.log('📂 Diretório a criar:', dir);
 
       // Cria o diretório recursivamente
       await fsPromises.mkdir(dir, { recursive: true });
       
-      // Escreve o arquivo
-      await fsPromises.writeFile(targetPath, Buffer.from(content));
-      console.log('✅ Arquivo salvo com sucesso');
+      // Converte o ArrayBuffer para Buffer e escreve o arquivo
+      // Usando { flag: 'w' } para garantir que o arquivo seja sobrescrito
+      const buffer = Buffer.from(new Uint8Array(content));
+      await fsPromises.writeFile(targetPath, buffer, { flag: 'w' });
+      
+      console.log('✅ Arquivo salvo com sucesso em:', targetPath);
       return { success: true };
     } catch (err) {
       console.error('❌ Erro ao fazer upload do arquivo:', err);

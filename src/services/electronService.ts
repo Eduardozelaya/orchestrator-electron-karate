@@ -5,9 +5,9 @@ interface ElectronAPI {
   runTests: (paths: string[]) => Promise<TestExecutionResult[]>;
   listDataFiles: (path: string) => Promise<string[]>;
   readFileContent: (path: string) => Promise<string>;
-  saveCsvFile: (path: string, content: string) => Promise<void>;
+  saveCsvFile: (args: { path: string; content: string }) => Promise<void>;
   openReport: (reportPath: string) => Promise<void>;
-  uploadFile: (path: string, content: ArrayBuffer) => Promise<void>;
+  uploadFile: (args: { path: string; content: ArrayBuffer }) => Promise<void>;
   downloadFile: (path: string) => Promise<void>;
   deleteFile: (path: string) => Promise<void>;
   stopTestExecution: () => Promise<{ success: boolean; error?: string }>;
@@ -133,14 +133,14 @@ export class ElectronService {
     }
   }
   
-  async saveCsvFile(path: string, content: string): Promise<void> {
+  async saveCsvFile(args: { path: string; content: string }): Promise<void> {
     if (!this.isElectronMode) {
       console.warn('Modo Electron não disponível — simulação de salvamento');
       return;
     }
   
     try {
-      await window.electronAPI!.saveCsvFile(path, content);
+      await window.electronAPI!.saveCsvFile(args);
     } catch (error) {
       console.error('❌ Erro ao salvar arquivo CSV:', error);
       throw error;
@@ -170,7 +170,11 @@ export class ElectronService {
 
     try {
       const buffer = await file.arrayBuffer();
-      await window.electronAPI!.uploadFile(path, buffer);
+      const args = {
+        path: path,
+        content: buffer
+      };
+      await window.electronAPI!.uploadFile(args);
     } catch (error) {
       console.error('❌ Erro ao fazer upload do arquivo:', error);
       throw error;
