@@ -9,7 +9,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { File, Save } from 'lucide-react';
+import { File, Save, Lock } from 'lucide-react';
 import { electronService } from '@/services/electronService';
 import { toast } from 'sonner';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -32,6 +32,8 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(Date.now());
+  const [header, setHeader] = useState('');
+  const [contentWithoutHeader, setContentWithoutHeader] = useState('');
 
   const fileName = dataFile.split('/').pop() || '';
   const isCSV = fileName.endsWith('.csv');
@@ -43,6 +45,14 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
       loadFileContent();
     }
   }, [isOpen, dataFile, lastUpdate]);
+
+  useEffect(() => {
+    if (isCSV && content) {
+      const lines = content.split('\n').filter(line => line.trim());
+      setHeader(lines[0] || '');
+      setContentWithoutHeader(lines.slice(1).join('\n'));
+    }
+  }, [content, isCSV]);
 
   const loadFileContent = async () => {
     setIsLoading(true);
@@ -90,7 +100,8 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
     setIsSaving(true);
     try {
       // Formata o conteúdo antes de salvar
-      const formattedContent = formatCSVContent(content);
+      const newContent = isCSV ? `${header}\n${contentWithoutHeader}` : content;
+      const formattedContent = formatCSVContent(newContent);
       
       console.log('📂 Salvando arquivo em:', dataFile);
       console.log('📂 Conteúdo formatado:', formattedContent);
@@ -116,33 +127,135 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
 
   const formatContent = () => {
     if (isCSV) {
-      return content.split('\n').map((line, index) => (
-        <div key={index} className="font-mono text-sm border-b border-slate-200 py-1">
-          {line.split(',').map((cell, cellIndex) => (
-            <span key={cellIndex} className="inline-block min-w-[100px] px-2 border-r border-slate-200">
-              {cell}
-            </span>
-          ))}
+      const lines = content.split('\n').filter(line => line.trim());
+      const headers = lines[0]?.split(',').map(cell => cell.trim()) || [];
+      const data = lines.slice(1);
+
+      // Verifica se é um arquivo de descrição de campos
+      const isFieldDescription = isDescriptionFile || headers.length > 0 && data.some(line => line.includes(':'));
+
+      if (isFieldDescription) {
+        // Processa as descrições dos campos
+        const descriptions = new Map();
+        let currentField = '';
+        let currentDescription = '';
+
+        // Processa o conteúdo para extrair as descrições
+        data.forEach(line => {
+          // Remove aspas extras e espaços
+          const cleanLine = line.replace(/^["']|["']$/g, '').trim();
+          
+          // Verifica se a linha começa com um campo conhecido
+          const matchingHeader = headers.find(header => 
+            cleanLine.toLowerCase().startsWith(header.toLowerCase() + ':') ||
+            cleanLine.toLowerCase().startsWith('"' + header.toLowerCase() + ':') ||
+            cleanLine.toLowerCase().startsWith("'" + header.toLowerCase() + ':')
+          );
+
+          if (matchingHeader) {
+            // Se encontrou um novo campo e já tinha um campo atual, salva o anterior
+            if (currentField && currentDescription) {
+              descriptions.set(currentField, currentDescription.trim());
+            }
+            // Começa um novo campo
+            currentField = matchingHeader;
+            currentDescription = cleanLine.substring(cleanLine.indexOf(':') + 1).trim();
+          } else if (currentField) {
+            // Continua a descrição do campo atual
+            currentDescription += ' ' + cleanLine;
+          }
+        });
+
+        // Salva o último campo
+        if (currentField && currentDescription) {
+          descriptions.set(currentField, currentDescription.trim());
+        }
+
+        // Renderiza a tabela com as descrições processadas
+        return (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead className="bg-slate-100 sticky top-0">
+                <tr>
+                  <th className="px-4 py-2 text-left text-sm font-medium text-slate-700 border-b border-slate-200 min-w-[150px]">
+                    Campo
+                  </th>
+                  <th className="px-4 py-2 text-left text-sm font-medium text-slate-700 border-b border-slate-200">
+                    Descrição
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {headers.map((header, index) => {
+                  const description = descriptions.get(header) || '';
+                  return (
+                    <tr key={index} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 text-sm border-b border-slate-200 font-medium text-slate-700 whitespace-nowrap">
+                        {header}
+                      </td>
+                      <td className="px-4 py-3 text-sm border-b border-slate-200 text-slate-600">
+                        {description}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      // Formatação padrão para CSVs normais
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
+            <thead className="bg-slate-100 sticky top-0">
+              <tr>
+                {headers.map((header, index) => (
+                  <th 
+                    key={index} 
+                    className="px-4 py-2 text-left text-sm font-medium text-slate-700 border-b border-slate-200 min-w-[150px]"
+                  >
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((line, rowIndex) => (
+                <tr key={rowIndex} className="hover:bg-slate-50">
+                  {line.split(',').map((cell, cellIndex) => (
+                    <td 
+                      key={cellIndex} 
+                      className="px-4 py-2 text-sm border-b border-slate-200"
+                    >
+                      {cell.trim()}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      ));
+      );
     } else if (isJSON) {
       try {
         const parsed = JSON.parse(content);
         return (
-          <pre className="font-mono text-sm whitespace-pre-wrap">
+          <pre className="font-mono text-sm whitespace-pre-wrap bg-slate-50 p-4 rounded-lg">
             {JSON.stringify(parsed, null, 2)}
           </pre>
         );
       } catch {
-        return <pre className="font-mono text-sm whitespace-pre-wrap">{content}</pre>;
+        return <pre className="font-mono text-sm whitespace-pre-wrap bg-slate-50 p-4 rounded-lg">{content}</pre>;
       }
     }
-    return <pre className="font-mono text-sm whitespace-pre-wrap">{content}</pre>;
+    return <pre className="font-mono text-sm whitespace-pre-wrap bg-slate-50 p-4 rounded-lg">{content}</pre>;
   };
 
   return (
     <Sheet open={isOpen} onOpenChange={onClose}>
-      <SheetContent className="w-full sm:max-w-4xl">
+      <SheetContent className="w-full sm:max-w-4xl overflow-y-auto">
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
             <File className="h-5 w-5" />
@@ -199,21 +312,48 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
               <Skeleton className="h-4 w-1/2" />
             </div>
           ) : (
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              className="font-mono text-sm min-h-[300px]"
-              readOnly={isDescriptionFile}
-            />
-          )}
-
-          {!isLoading && (content || isDescriptionFile) && (
-            <div className="border rounded-lg p-4 bg-slate-50">
-              <p className="text-sm font-medium text-slate-700 mb-2">Visualização formatada:</p>
-              <div className="overflow-x-auto">
-                {formatContent()}
+            <>
+              {/* Preview em cima */}
+              <div className="border rounded-lg p-4 bg-white">
+                <p className="text-sm font-medium text-slate-700 mb-2">Visualização formatada:</p>
+                <div className="max-h-[300px] overflow-y-auto">
+                  {formatContent()}
+                </div>
               </div>
-            </div>
+
+              {/* Editor embaixo */}
+              <div className="border rounded-lg p-4 bg-white">
+                <p className="text-sm font-medium text-slate-700 mb-2">Editor:</p>
+                {isCSV ? (
+                  <div className="space-y-2">
+                    {/* Cabeçalho travado */}
+                    <div className="relative">
+                      <Textarea
+                        value={header}
+                        className="font-mono text-sm bg-slate-50 min-h-[40px] resize-none"
+                        readOnly
+                      />
+                    </div>
+                    {/* Conteúdo editável */}
+                    <Textarea
+                      value={contentWithoutHeader}
+                      onChange={(e) => setContentWithoutHeader(e.target.value)}
+                      className="font-mono text-sm min-h-[150px]"
+                      readOnly={isDescriptionFile}
+                      placeholder="Digite o conteúdo do arquivo aqui..."
+                    />
+                  </div>
+                ) : (
+                  <Textarea
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    className="font-mono text-sm min-h-[200px]"
+                    readOnly={isDescriptionFile}
+                    placeholder="Digite o conteúdo do arquivo aqui..."
+                  />
+                )}
+              </div>
+            </>
           )}
         </div>
       </SheetContent>
