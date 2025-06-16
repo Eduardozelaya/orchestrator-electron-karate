@@ -34,6 +34,7 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
   const [lastUpdate, setLastUpdate] = useState(Date.now());
   const [header, setHeader] = useState('');
   const [contentWithoutHeader, setContentWithoutHeader] = useState('');
+  const [isDataFile, setIsDataFile] = useState(false);
 
   const fileName = dataFile.split('/').pop() || '';
   const isCSV = fileName.endsWith('.csv');
@@ -51,8 +52,10 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
       const lines = content.split('\n').filter(line => line.trim());
       setHeader(lines[0] || '');
       setContentWithoutHeader(lines.slice(1).join('\n'));
+      // Verifica se é um arquivo de dados (não de descrição) e tem dados
+      setIsDataFile(!isDescriptionFile && lines.length > 1 && !lines[1].includes(':'));
     }
-  }, [content, isCSV]);
+  }, [content, isCSV, isDescriptionFile]);
 
   const loadFileContent = async () => {
     setIsLoading(true);
@@ -99,9 +102,24 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
     
     setIsSaving(true);
     try {
-      // Formata o conteúdo antes de salvar
-      const newContent = isCSV ? `${header}\n${contentWithoutHeader}` : content;
-      const formattedContent = formatCSVContent(newContent);
+      let formattedContent;
+      
+      if (isCSV) {
+        if (isDataFile) {
+          // Para arquivos de dados, mantém o formato original com vírgulas
+          const newContent = contentWithoutHeader.split('\n')
+            .filter(line => line.trim())
+            .map(line => line.split(',').map(cell => cell.trim()).join(','))
+            .join('\n');
+          formattedContent = `${header}\n${newContent}`;
+        } else {
+          // Para arquivos de descrição, usa o formato anterior
+          const newContent = isCSV ? `${header}\n${contentWithoutHeader}` : content;
+          formattedContent = formatCSVContent(newContent);
+        }
+      } else {
+        formattedContent = content;
+      }
       
       console.log('📂 Salvando arquivo em:', dataFile);
       console.log('📂 Conteúdo formatado:', formattedContent);
@@ -337,10 +355,15 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
                     {/* Conteúdo editável */}
                     <Textarea
                       value={contentWithoutHeader}
-                      onChange={(e) => setContentWithoutHeader(e.target.value)}
+                      onChange={(e) => {
+                        const newContent = e.target.value;
+                        setContentWithoutHeader(newContent);
+                        // Atualiza o content completo para manter a consistência
+                        setContent(`${header}\n${newContent}`);
+                      }}
                       className="font-mono text-sm min-h-[150px]"
                       readOnly={isDescriptionFile}
-                      placeholder="Digite o conteúdo do arquivo aqui..."
+                      placeholder={isDataFile ? "Digite os dados separados por vírgula..." : "Digite o conteúdo do arquivo aqui..."}
                     />
                   </div>
                 ) : (
