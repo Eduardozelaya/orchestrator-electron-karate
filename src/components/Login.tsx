@@ -1,3 +1,4 @@
+import { useAuthStore } from "../stores/auth";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card } from "./ui/card";
@@ -8,6 +9,7 @@ import { Button } from "./ui/button";
 
 export function Login() {
   const navigate = useNavigate();
+  const { setUsername, setPassword } = useAuthStore();
   const [formData, setFormData] = useState({
     unidade: "",
     sistema: "",
@@ -38,6 +40,8 @@ export function Login() {
     e.preventDefault();
     // Por enquanto apenas redireciona para a tela principal
     if (validate()) {
+        setUsername(formData.usuario);
+        setPassword(formData.senha);
       navigate("/main");
     }
   };

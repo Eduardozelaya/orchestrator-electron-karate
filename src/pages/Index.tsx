@@ -1,3 +1,4 @@
+import { useAuthStore } from "../stores/auth";
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -5,13 +6,14 @@ import { Badge } from '@/components/ui/badge';
 import TestSelector from '@/components/TestSelector';
 import TestExecutor from '@/components/TestExecutor';
 import DataFileViewer from '@/components/DataFileViewer';
-import { FolderOpen, Play, Settings, Zap } from 'lucide-react';
+import { FolderOpen, Play, Settings, Zap, User } from 'lucide-react';
 import { electronService } from '@/services/electronService';
 import { toast } from 'sonner';
 
 import { KarateTest } from '@/types/KarateTest';
 
 const Index = () => {
+  const { username, password } = useAuthStore();
   const [projectPath, setProjectPath] = useState<string>('');
   const [discoveredTests, setDiscoveredTests] = useState<KarateTest[]>([]);
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
@@ -98,6 +100,15 @@ const Index = () => {
           </Button>
         </div>
 
+        {/* Dados do Zustand */}
+        <div className="bg-white/50 backdrop-blur border rounded-lg p-4 flex items-center gap-4">
+          <User className="h-4 w-4 text-blue-600" />
+          <div className="text-sm text-slate-700 space-y-1">
+            <p><strong>Usuário:</strong> {username || 'não definido'}</p>
+            <p><strong>Senha:</strong> {"•".repeat(password?.length || 0)}</p>
+          </div>
+        </div>
+
         {/* Project Path */}
         {projectPath && (
           <div className="bg-white/50 backdrop-blur border rounded-lg p-4">
@@ -129,7 +140,7 @@ const Index = () => {
                     selectedTests={selectedTests}
                     onSelectionChange={handleTestSelection}
                     isScanning={isLoading}
-                    onDataFileView={(testId, dataFile) => 
+                    onDataFileView={(testId, dataFile) =>
                       setDataFileViewer({ isOpen: true, testId, dataFile })}
                     onRefresh={refreshTests}
                   />
