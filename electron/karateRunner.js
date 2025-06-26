@@ -167,7 +167,7 @@ function killCurrentTest() {
   return true;
 }
 
-async function runTests(paths) {
+async function runTests(paths, username, password) {
   if (!projectRoot || !basePath) {
     throw new Error('Caminho do projeto não configurado. Use setProjectPath primeiro.');
   }
@@ -198,7 +198,12 @@ async function runTests(paths) {
     console.log(`🚀 Executando teste ${index + 1}/${paths.length}:`, featurePath);
     
     const command = process.platform === 'win32' ? 'mvn.cmd' : 'mvn';
-    const args = ['test', `-Dkarate.options=classpath:${featurePath}`];
+    const args = [
+      'test',
+      `-Dkarate.options=classpath:${featurePath}`,
+      `-Dusername=${username}`,
+      `-Dpassword=${password}`
+    ];
 
     console.log('📋 Comando:', command, args.join(' '));
 

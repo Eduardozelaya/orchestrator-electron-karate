@@ -58,12 +58,15 @@ function createWindow() {
     }
   });
 
-  ipcMain.handle('run-tests', async (_, selectedPaths) => {
+  ipcMain.handle('run-tests', async (_, selectedPaths, username, password) => {
     if (!projectPath) {
       throw new Error('Projeto não configurado. Selecione um projeto Maven primeiro.');
     }
-    
-    return await runTests(selectedPaths);
+    console.log('📨 IPC: run-tests chamado');
+    console.log('selectedPaths:', selectedPaths);
+    console.log('username:', username);
+    console.log('password:', password);
+    return await runTests(selectedPaths, username, password);
   });
 
   ipcMain.handle('list-data-files', async (_, featurePath) => {

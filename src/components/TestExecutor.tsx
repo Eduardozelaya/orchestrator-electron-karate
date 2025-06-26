@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Play, Square, Clock, CheckCircle, XCircle, AlertCircle, ExternalLink, FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { electronService } from '@/services/electronService';
+import { useAuthStore } from '@/stores/auth';
 
 interface KarateTest {
   id: string;
@@ -130,8 +131,9 @@ const TestExecutor: React.FC<TestExecutorProps> = ({
         const test = tests.find(t => t.id === testId);
         return test?.path || '';
       });
+      const { username, password } = useAuthStore.getState();
 
-      const results = await electronService.runTests(selectedPaths);
+      const results = await electronService.runTests(selectedPaths, username, password);
       
       if (results.length > 0 && results[0].report) {
         setGeneralReportUrl(results[0].report);

@@ -9,11 +9,13 @@ import DataFileViewer from '@/components/DataFileViewer';
 import { FolderOpen, Play, Settings, Zap, User } from 'lucide-react';
 import { electronService } from '@/services/electronService';
 import { toast } from 'sonner';
+import { useNavigate } from 'react-router-dom';
 
 import { KarateTest } from '@/types/KarateTest';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const Index = () => {
-  const { username, password } = useAuthStore();
+  const { username, password, setUsername, setPassword, setHasLoadedProject, setUltimoSistema } = useAuthStore();
   const [projectPath, setProjectPath] = useState<string>('');
   const [discoveredTests, setDiscoveredTests] = useState<KarateTest[]>([]);
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
@@ -25,12 +27,36 @@ const Index = () => {
   });
 
   const isElectronMode = electronService.isElectronMode;
+  const navigate = useNavigate();
+  const { setUnidade } = useAuthStore();
+  const [credenciais, setCredenciais] = useState<{[sistema: string]: {usuario: string, senha: string, unidade: string}}>({});
+  const [sistemaSelecionado, setSistemaSelecionado] = useState<string>("");
+  const [unidadeSelecionada, setUnidadeSelecionada] = useState<string>("");
 
   useEffect(() => {
-    if (isElectronMode) {
+    const creds = JSON.parse(localStorage.getItem('credenciais') || '{}');
+    setCredenciais(creds);
+    // Se já houver um sistema salvo, selecione-o
+    if (Object.keys(creds).length > 0) {
+      const sistema = useAuthStore.getState().ultimoSistema || Object.keys(creds)[0];
+      setSistemaSelecionado(sistema);
+      setUsername(creds[sistema].usuario);
+      setPassword(creds[sistema].senha);
+    }
+  }, [setUsername, setPassword]);
+
+  useEffect(() => {
+    if (isElectronMode && username && password) {
       handleLoadTests();
     }
-  }, [isElectronMode]);
+  }, [isElectronMode, username, password]);
+
+  useEffect(() => {
+    if (!username || !password) {
+      toast.error('Usuário e senha são obrigatórios');
+      navigate('/Login');
+    }
+  }, [username, password, navigate]);
 
   const handleLoadTests = async () => {
     setIsLoading(true);
@@ -41,6 +67,7 @@ const Index = () => {
           throw new Error(projectResult.error);
         }
         setProjectPath(projectResult.projectRoot || '');
+        setHasLoadedProject(true);
       }
 
       await refreshTests();
@@ -77,18 +104,41 @@ const Index = () => {
     }
   };
 
+  const handleSistemaChange = (sistema: string) => {
+    setSistemaSelecionado(sistema);
+    setUsername(credenciais[sistema].usuario);
+    setPassword(credenciais[sistema].senha);
+    setUltimoSistema(sistema);
+  };
+
   const handleTestSelection = (testIds: string[]) => {
     setSelectedTests(testIds);
   };
+
+  useEffect(() => {
+    const lastPath = localStorage.getItem('ultimoProjectPath');
+    if (lastPath) {
+      setProjectPath(lastPath);
+    }
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-slate-800">
-            Orquestrador de Testes Karate
-          </h1>
+          <div className="flex items-center gap-2">  
+            <Button
+              variant="outline"
+              onClick={() => navigate('/login')}
+              className="flex items-center gap-1"
+            >
+              Voltar
+            </Button>
+            <h1 className="text-2xl font-bold text-slate-800">
+              Orquestrador de Testes Karate
+            </h1>
+          </div>
           <Button
             onClick={handleLoadTests}
             variant="outline"
@@ -100,14 +150,36 @@ const Index = () => {
           </Button>
         </div>
 
-        {/* Dados do Zustand */}
-        <div className="bg-white/50 backdrop-blur border rounded-lg p-4 flex items-center gap-4">
-          <User className="h-4 w-4 text-blue-600" />
-          <div className="text-sm text-slate-700 space-y-1">
-            <p><strong>Usuário:</strong> {username || 'não definido'}</p>
-            <p><strong>Senha:</strong> {"•".repeat(password?.length || 0)}</p>
+        <Card className="bg-white/70 backdrop-blur border rounded-lg p-4 flex flex-col md:flex-row items-center gap-6 mb-2">
+          <div className="flex-1 flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <User className="h-5 w-5 text-blue-600" />
+              <Select value={sistemaSelecionado} onValueChange={handleSistemaChange}>
+                <SelectTrigger className="w-[200px]">
+                  <SelectValue placeholder="Selecione o sistema" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.keys(credenciais).map(sistema => (
+                    <SelectItem key={sistema} value={sistema}>
+                      {sistema.charAt(0).toUpperCase() + sistema.slice(1)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="text-sm text-slate-700 space-y-1 mt-2">
+              <p>
+                <span className="font-semibold">Sistema:</span> {sistemaSelecionado || <span className="italic text-slate-400">não definido</span>}
+              </p>
+              <p>
+                <span className="font-semibold">Usuário:</span> {username || <span className="italic text-slate-400">não definido</span>}
+              </p>
+              <p>
+                <span className="font-semibold">Senha:</span> {password ? "•".repeat(password.length) : <span className="italic text-slate-400">não definida</span>}
+              </p>
+            </div>
           </div>
-        </div>
+        </Card>
 
         {/* Project Path */}
         {projectPath && (

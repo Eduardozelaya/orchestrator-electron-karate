@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   selectMavenProject: () => ipcRenderer.invoke('select-maven-project'),
   getFeatureTests: () => ipcRenderer.invoke('get-feature-tests'),
-  runTests: (paths) => ipcRenderer.invoke('run-tests', paths),
+  runTests: (paths, username, password) => ipcRenderer.invoke('run-tests', paths, username, password),
   listDataFiles: (path) => ipcRenderer.invoke('list-data-files', path),
   readFileContent: (path) => ipcRenderer.invoke('read-file-content', path),
   openReport: (reportPath) => ipcRenderer.invoke('open-report', reportPath),

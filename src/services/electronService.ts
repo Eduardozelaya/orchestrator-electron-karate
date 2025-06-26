@@ -2,7 +2,7 @@
 interface ElectronAPI {
   selectMavenProject: () => Promise<{ success: boolean; projectRoot?: string; basePath?: string; error?: string }>;
   getFeatureTests: () => Promise<KarateTestsResult>;
-  runTests: (paths: string[]) => Promise<TestExecutionResult[]>;
+  runTests: (paths: string[], username: string, password: string) => Promise<TestExecutionResult[]>;
   listDataFiles: (path: string) => Promise<string[]>;
   readFileContent: (path: string) => Promise<string>;
   saveCsvFile: (args: { path: string; content: string }) => Promise<void>;
@@ -89,13 +89,13 @@ export class ElectronService {
     }
   }
 
-  async runTests(paths: string[]): Promise<TestExecutionResult[]> {
+  async runTests(paths: string[], username: string, password: string): Promise<TestExecutionResult[]> {
     if (!this.isElectronMode) {
       return this.simulateTestExecution(paths);
     }
 
     try {
-      return await window.electronAPI!.runTests(paths);
+      return await window.electronAPI!.runTests(paths, username, password);
     } catch (error) {
       console.error('❌ Erro ao executar testes:', error);
       throw error;
