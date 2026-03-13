@@ -77,10 +77,15 @@ function listFeatureFiles() {
   }
 
   function findFeatureFile(dir) {
-    // Primeiro tenta encontrar o arquivo padrão
-    const expectedPath = path.join(dir, 'karateTests', 'UITests', 'cotizador.feature');
-    if (fs.existsSync(expectedPath)) {
-      return expectedPath;
+    // Tenta encontrar arquivos padrão conhecidos
+    const peopleSoftPath = path.join(dir, 'karateTests', 'UITests', 'peopleSoft.feature');
+    if (fs.existsSync(peopleSoftPath)) {
+      return peopleSoftPath;
+    }
+
+    const cotizadorPath = path.join(dir, 'karateTests', 'UITests', 'cotizador.feature');
+    if (fs.existsSync(cotizadorPath)) {
+      return cotizadorPath;
     }
 
     // Se não encontrar, procura por qualquer .feature recursivamente
