@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { generateRichReport } = require('./reportGenerator');
 
 let projectRoot = '';
 let basePath = '';
@@ -202,6 +203,22 @@ async function runTests(paths, username, password) {
 
     console.log(`🚀 Executando teste ${index + 1}/${paths.length}:`, featurePath);
     
+    // Limpar relatórios e screenshots anteriores para garantir que o relatório rico 
+    // contenha apenas dados desta execução específica.
+    const karateReportsDir = path.join(projectRoot, 'target', 'karate-reports');
+    if (fs.existsSync(karateReportsDir)) {
+      try {
+        // Remove todos os arquivos dentro do diretório, mas mantém a pasta se possível
+        const files = fs.readdirSync(karateReportsDir);
+        for (const file of files) {
+          fs.rmSync(path.join(karateReportsDir, file), { recursive: true, force: true });
+        }
+        console.log('🧹 Relatórios e screenshots antigos limpos.');
+      } catch (err) {
+        console.warn('⚠️ Não foi possível limpar relatórios antigos:', err.message);
+      }
+    }
+    
     const command = process.platform === 'win32' ? 'mvn.cmd' : 'mvn';
     const args = [
       'test',
@@ -234,7 +251,7 @@ async function runTests(paths, username, password) {
         console.error('📤 Maven error:', output);
       });
 
-      currentMavenProcess.on('close', code => {
+      currentMavenProcess.on('close', async code => {
         console.log(`✅ Processo finalizado com código: ${code}`);
         currentMavenProcess = null;
         
@@ -250,16 +267,26 @@ async function runTests(paths, username, password) {
         }
 
         const reportBaseName = featurePath.replace(/\//g, '.').replace(/\.feature$/, '') + '.html';
-        const reportPath = path.join('target', 'karate-reports', reportBaseName);
-        const absoluteReportPath = path.resolve(projectRoot, reportPath);
+        const defaultReportPath = path.join('target', 'karate-reports', reportBaseName);
+        let finalReportAbsPath = path.resolve(projectRoot, defaultReportPath);
+        
+        try {
+            console.log('🔄 Gerando relatório rich...');
+            const richReportPath = await generateRichReport(projectRoot);
+            if (richReportPath) {
+                finalReportAbsPath = richReportPath;
+            }
+        } catch (err) {
+            console.error('❌ Fallback para relatorio padrão:', err);
+        }
 
-        console.log('📄 Caminho do relatório:', absoluteReportPath);
+        console.log('📄 Caminho do relatório:', finalReportAbsPath);
 
         if (code === 0) {
           resolve({
             success: true,
             feature: featurePath,
-            report: `file://${absoluteReportPath}`,
+            report: `file://${finalReportAbsPath}`,
             output: stdout,
             originalIndex: index
           });
@@ -267,7 +294,7 @@ async function runTests(paths, username, password) {
           resolve({
             success: false,
             feature: featurePath,
-            report: `file://${absoluteReportPath}`,
+            report: `file://${finalReportAbsPath}`,
             error: stderr || stdout || 'Erro desconhecido na execução',
             originalIndex: index
           });
