@@ -9,7 +9,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { File, Save, Lock } from 'lucide-react';
+import { File, Save, Lock, PenLine } from 'lucide-react';
 import { electronService } from '@/services/electronService';
 import { toast } from 'sonner';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -36,6 +36,11 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
   const [contentWithoutHeader, setContentWithoutHeader] = useState('');
   const [isDataFile, setIsDataFile] = useState(false);
 
+  // Estado para descrição de texto livre (fora do CSV)
+  const [descriptionText, setDescriptionText] = useState('');
+  const [originalDescriptionText, setOriginalDescriptionText] = useState('');
+  const [isSavingDescription, setIsSavingDescription] = useState(false);
+
   const fileName = dataFile.split('/').pop() || '';
   const isCSV = fileName.endsWith('.csv');
   const isJSON = fileName.endsWith('.json');
@@ -50,8 +55,14 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
   useEffect(() => {
     if (isCSV && content) {
       const lines = content.split('\n').filter(line => line.trim());
-      setHeader(lines[0] || '');
-      setContentWithoutHeader(lines.slice(1).join('\n'));
+      // Limpa ponto-e-vírgulas extras do header e do conteúdo
+      const cleanedHeader = (lines[0] || '').replace(/;+/g, ',').replace(/,+$/g, '').replace(/,+/g, ',');
+      setHeader(cleanedHeader);
+      // Limpa ponto-e-vírgulas extras das linhas de conteúdo
+      const cleanedContent = lines.slice(1)
+        .map(line => line.replace(/;+/g, ' ').replace(/\s+/g, ' ').trim())
+        .join('\n');
+      setContentWithoutHeader(cleanedContent);
       // Verifica se é um arquivo de dados (não de descrição) e tem dados
       setIsDataFile(!isDescriptionFile && lines.length > 1 && !lines[1].includes(':'));
     }
@@ -67,6 +78,22 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
       const fileContent = await electronService.readFileContent(dataFile);
       setContent(fileContent);
       setOriginalContent(fileContent);
+
+      // Se é arquivo de descrição, tenta carregar o descricao.txt da mesma pasta
+      if (isDescriptionFile) {
+        try {
+          const descTxtPath = dataFile.replace(/[^\/]+$/, 'descricao.txt');
+          console.log('📂 Tentando carregar descricao.txt em:', descTxtPath);
+          const descContent = await electronService.readFileContent(descTxtPath);
+          setDescriptionText(descContent);
+          setOriginalDescriptionText(descContent);
+        } catch {
+          // Arquivo não existe ainda, começa vazio
+          console.log('📝 descricao.txt não encontrado, iniciando vazio');
+          setDescriptionText('');
+          setOriginalDescriptionText('');
+        }
+      }
     } catch (error) {
       toast.error('Erro ao carregar arquivo');
       console.error('❌ Erro ao carregar arquivo:', error);
@@ -141,12 +168,34 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
     }
   };
 
+  const handleSaveDescription = async () => {
+    setIsSavingDescription(true);
+    try {
+      const descTxtPath = dataFile.replace(/[^\/]+$/, 'descricao.txt');
+      console.log('📂 Salvando descrição em:', descTxtPath);
+      await electronService.saveCsvFile({
+        path: descTxtPath,
+        content: descriptionText
+      });
+      setOriginalDescriptionText(descriptionText);
+      toast.success('Descrição salva com sucesso!');
+    } catch (error) {
+      toast.error('Erro ao salvar descrição');
+      console.error('❌ Erro ao salvar descrição:', error);
+    } finally {
+      setIsSavingDescription(false);
+    }
+  };
+
   const hasChanges = content !== originalContent && !isDescriptionFile;
+  const hasDescriptionChanges = descriptionText !== originalDescriptionText;
 
   const formatContent = () => {
     if (isCSV) {
       const lines = content.split('\n').filter(line => line.trim());
-      const headers = lines[0]?.split(',').map(cell => cell.trim()) || [];
+      // Limpa ponto-e-vírgulas extras do header e extrai headers limpos
+      const cleanedHeaderLine = (lines[0] || '').replace(/;+/g, ',').replace(/,+$/g, '').replace(/,+/g, ',');
+      const headers = cleanedHeaderLine.split(',').map(cell => cell.trim()).filter(cell => cell);
       const data = lines.slice(1);
 
       // Verifica se é um arquivo de descrição de campos
@@ -160,8 +209,12 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
 
         // Processa o conteúdo para extrair as descrições
         data.forEach(line => {
-          // Remove aspas extras e espaços
-          const cleanLine = line.replace(/^["']|["']$/g, '').trim();
+          // Remove aspas extras, espaços e vírgulas extras (colunas vazias do CSV)
+          const cleanLine = line
+            .replace(/^["']|["']$/g, '')
+            .replace(/,+$/g, '')  // Remove vírgulas finais (colunas vazias)
+            .replace(/;+$/g, '')  // Remove ponto-e-vírgulas finais
+            .trim();
           
           // Verifica se a linha começa com um campo conhecido
           const matchingHeader = headers.find(header => 
@@ -173,20 +226,24 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
           if (matchingHeader) {
             // Se encontrou um novo campo e já tinha um campo atual, salva o anterior
             if (currentField && currentDescription) {
-              descriptions.set(currentField, currentDescription.trim());
+              descriptions.set(currentField, currentDescription.replace(/[,;]+$/g, '').trim());
             }
-            // Começa um novo campo
+            // Começa um novo campo - limpa vírgulas/ponto-e-vírgulas extras
             currentField = matchingHeader;
-            currentDescription = cleanLine.substring(cleanLine.indexOf(':') + 1).trim();
+            const rawDesc = cleanLine.substring(cleanLine.indexOf(':') + 1);
+            currentDescription = rawDesc.replace(/,+/g, ' ').replace(/;+/g, ' ').replace(/\s+/g, ' ').trim();
           } else if (currentField) {
-            // Continua a descrição do campo atual
-            currentDescription += ' ' + cleanLine;
+            // Continua a descrição do campo atual - limpa separadores extras
+            const cleanContinuation = cleanLine.replace(/,+/g, ' ').replace(/;+/g, ' ').replace(/\s+/g, ' ').trim();
+            if (cleanContinuation) {
+              currentDescription += ' ' + cleanContinuation;
+            }
           }
         });
 
         // Salva o último campo
         if (currentField && currentDescription) {
-          descriptions.set(currentField, currentDescription.trim());
+          descriptions.set(currentField, currentDescription.replace(/[,;]+$/g, '').trim());
         }
 
         // Renderiza a tabela com as descrições processadas
@@ -331,6 +388,48 @@ const DataFileViewer: React.FC<DataFileViewerProps> = ({
             </div>
           ) : (
             <>
+              {/* Campo de descrição do teste (fora do CSV) */}
+              {isDescriptionFile && (
+                <div className="border rounded-lg p-4 bg-blue-50 border-blue-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <PenLine className="h-4 w-4 text-blue-600" />
+                      <p className="text-sm font-medium text-blue-800">Descrição do Teste:</p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleSaveDescription}
+                      disabled={!hasDescriptionChanges || isSavingDescription}
+                      className="bg-white"
+                    >
+                      {isSavingDescription ? (
+                        <>
+                          <Skeleton className="h-4 w-4 mr-2" />
+                          Salvando...
+                        </>
+                      ) : (
+                        <>
+                          <Save className="h-4 w-4 mr-2" />
+                          Salvar Descrição
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  <Textarea
+                    value={descriptionText}
+                    onChange={(e) => setDescriptionText(e.target.value)}
+                    className="bg-white min-h-[100px] text-sm"
+                    placeholder="Digite a descrição do teste aqui... (salvo em arquivo separado do CSV)"
+                  />
+                  {hasDescriptionChanges && (
+                    <Badge variant="secondary" className="mt-2 bg-orange-100 text-orange-700">
+                      Modificado
+                    </Badge>
+                  )}
+                </div>
+              )}
+
               {/* Preview em cima */}
               <div className="border rounded-lg p-4 bg-white">
                 <p className="text-sm font-medium text-slate-700 mb-2">Visualização formatada:</p>
