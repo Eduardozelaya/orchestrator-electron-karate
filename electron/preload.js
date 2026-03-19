@@ -11,5 +11,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uploadFile: (args) => ipcRenderer.invoke('upload-file', args),
   downloadFile: (path) => ipcRenderer.invoke('download-file', path),
   deleteFile: (path) => ipcRenderer.invoke('delete-file', path),
-  stopTestExecution: () => ipcRenderer.invoke('stop-test-execution')
+  stopTestExecution: () => ipcRenderer.invoke('stop-test-execution'),
+  getRowEvents: () => ipcRenderer.invoke('get-row-events')
 });

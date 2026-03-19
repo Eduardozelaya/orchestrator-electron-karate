@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const fsPromises = require('fs/promises');
 const { setProjectPath, listFeatureFiles, runTests, getBasePath, killCurrentTest } = require('./karateRunner');
+const { readRowEvents } = require('./reportGenerator');
 const { Console } = require('console');
 
 let projectPath = null;
@@ -254,6 +255,21 @@ function createWindow() {
     } catch (error) {
       console.error('❌ Erro ao tentar parar execução:', error);
       return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('get-row-events', async () => {
+    console.log('📨 IPC: get-row-events chamado');
+    if (!projectPath) {
+      throw new Error('Projeto não configurado. Selecione um projeto Maven primeiro.');
+    }
+    try {
+      const events = readRowEvents(projectPath);
+      console.log(`📊 Row events: ${events.allEvents.length} eventos, ${Object.keys(events.byRow).length} linhas CSV`);
+      return events;
+    } catch (error) {
+      console.error('❌ Erro ao ler row events:', error);
+      return { byRow: {}, allEvents: [] };
     }
   });
 }

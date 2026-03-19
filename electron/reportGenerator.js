@@ -2,6 +2,53 @@ const fs = require('fs');
 const path = require('path');
 
 /**
+ * Lê o arquivo de eventos por linha CSV (JSONL) e agrupa por rowId.
+ * 
+ * @param {string} projectRoot Caminho raiz do projeto
+ * @returns {Object} { byRow: { [rowId]: Event[] }, allEvents: Event[] }
+ */
+function readRowEvents(projectRoot) {
+    const jsonlPath = path.join(projectRoot, 'target', 'karate-row-events.jsonl');
+    const result = { byRow: {}, allEvents: [] };
+
+    if (!fs.existsSync(jsonlPath)) {
+        // Fallback: tenta o .log antigo
+        const logPath = path.join(projectRoot, 'target', 'karate-row-events.log');
+        if (!fs.existsSync(logPath)) return result;
+        try {
+            const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(l => l.trim());
+            lines.forEach(line => {
+                try {
+                    const evt = JSON.parse(line);
+                    result.allEvents.push(evt);
+                    const key = evt.rowId != null ? String(evt.rowId) : 'unknown';
+                    if (!result.byRow[key]) result.byRow[key] = [];
+                    result.byRow[key].push(evt);
+                } catch(e) { /* skip malformed */ }
+            });
+        } catch(e) { console.error('Erro ao ler log antigo:', e); }
+        return result;
+    }
+
+    try {
+        const lines = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/).filter(l => l.trim());
+        lines.forEach(line => {
+            try {
+                const evt = JSON.parse(line);
+                result.allEvents.push(evt);
+                const key = evt.rowId != null ? String(evt.rowId) : 'unknown';
+                if (!result.byRow[key]) result.byRow[key] = [];
+                result.byRow[key].push(evt);
+            } catch(e) { /* skip malformed */ }
+        });
+    } catch(e) {
+        console.error('❌ Erro ao ler karate-row-events.jsonl:', e);
+    }
+
+    return result;
+}
+
+/**
  * Mapeia os screenshots de um feature no diretório do Karate.
  * 
  * @param {string} reportsDir Diretório onde estão os relatórios (target/karate-reports)
@@ -58,7 +105,30 @@ function getImageBase64(filepath) {
 /**
  * Constrói o HTML do relatório embutindo dados e imagens.
  */
-function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo) {
+// Paleta de 10 cores vibrantes para regiões
+const REGION_COLORS = [
+    { border: '#2563eb', bg: '#eff6ff', text: '#1e40af' }, // azul
+    { border: '#7c3aed', bg: '#f5f3ff', text: '#5b21b6' }, // roxo
+    { border: '#059669', bg: '#ecfdf5', text: '#065f46' }, // verde
+    { border: '#d97706', bg: '#fffbeb', text: '#92400e' }, // amarelo
+    { border: '#e11d48', bg: '#fff1f2', text: '#9f1239' }, // rosa
+    { border: '#0891b2', bg: '#ecfeff', text: '#155e75' }, // ciano
+    { border: '#ea580c', bg: '#fff7ed', text: '#9a3412' }, // laranja
+    { border: '#4f46e5', bg: '#eef2ff', text: '#3730a3' }, // indigo
+    { border: '#0d9488', bg: '#f0fdfa', text: '#134e4a' }, // teal
+    { border: '#c026d3', bg: '#fdf4ff', text: '#86198f' }, // fúcsia
+];
+
+function hashLabelToColorIndex(label) {
+    let hash = 0;
+    for (let i = 0; i < label.length; i++) {
+        hash = ((hash << 5) - hash) + label.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash) % REGION_COLORS.length;
+}
+
+function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, rowEvents) {
     // Calculo de cor base no status
     let statusClass = summary.failed ? 'text-red-500 bg-red-100 border-red-500' : 'text-green-500 bg-green-100 border-green-500';
     let statusIcon = summary.failed ? '❌ Falhou' : '✅ Sucesso';
@@ -146,6 +216,19 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo) {
 
 
 
+    // Agrupar screenshots por scenarioIndex para suportar testes data-driven (N linhas CSV)
+    const screenshotsByScenario = {};
+    screenshotsContent.forEach(s => {
+        const key = s.scenarioIndex !== undefined ? s.scenarioIndex : 0;
+        if (!screenshotsByScenario[key]) screenshotsByScenario[key] = [];
+        screenshotsByScenario[key].push(s);
+    });
+    const scenarioKeys = Object.keys(screenshotsByScenario).sort((a, b) => Number(a) - Number(b));
+    const numScenarios = scenarioKeys.length;
+
+    // Contador de posição do screenshot dentro de uma iteração
+    let screenshotPositionCounter = 0;
+
     // Função recursiva principal para iterar calls aninhadas, agora com agrupamento por etapas estilo Power Automate Desktop
     function renderSteps(scenarioList, depth = 0) {
         let html = '';
@@ -202,7 +285,11 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo) {
             } else if (stepText.match(/driver\.screenshot/)) {
                 actionIcon = '📸';
                 actionTitle = 'Capturar screenshot';
-                actionDesc = 'Capturar uma imagem da tela atual para evidência';
+                actionDesc = `Capturar uma imagem da tela atual para evidência${numScenarios > 1 ? ` (📊 ${numScenarios} iterações de dados)` : ''}`;
+                // Marca que este step tem screenshot para embutir abaixo
+                stepResult._hasScreenshot = true;
+                stepResult._screenshotPos = screenshotPositionCounter;
+                screenshotPositionCounter++;
             } else if (stepText.match(/driver\.highlight/)) {
                 actionIcon = '🔦';
                 actionTitle = 'Destacar elemento';
@@ -237,6 +324,57 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo) {
             }
             rowHtml += `</div>`;
 
+            // Se é um step de screenshot, embutir as imagens de TODAS as iterações
+            if (stepResult._hasScreenshot) {
+                const pos = stepResult._screenshotPos;
+                // Coletar screenshots de todas as iterações nesta posição
+                const allScreenshotsForPos = [];
+                scenarioKeys.forEach(key => {
+                    const group = screenshotsByScenario[key];
+                    if (group && group[pos]) {
+                        allScreenshotsForPos.push({ ...group[pos], scenarioKey: key });
+                    }
+                });
+
+                if (allScreenshotsForPos.length > 0) {
+                    const previewId = `ss_preview_${pos}_${Math.random().toString(36).substr(2, 6)}`;
+                    const totalCount = allScreenshotsForPos.length;
+                    rowHtml += `<div class="pa-screenshot-preview">`;
+                    rowHtml += `<div class="pa-screenshot-toggle" onclick="var el=document.getElementById('${previewId}'); el.classList.toggle('pa-hidden'); this.querySelector('.pa-ss-chevron').classList.toggle('pa-open')">`;
+                    rowHtml += `<span class="pa-ss-chevron pa-open">▾</span> 🖼️ Ver screenshot${totalCount > 1 ? `s (${totalCount} iterações)` : ' capturado'}`;
+                    rowHtml += `</div>`;
+                    rowHtml += `<div id="${previewId}" class="pa-screenshot-img-container">`;
+
+                    if (totalCount > 1) {
+                        // Tabs para cada iteração de dados
+                        const tabGroupId = `ss_tabs_${pos}_${Math.random().toString(36).substr(2, 6)}`;
+                        rowHtml += `<div class="pa-ss-tabs-container">`;
+                        rowHtml += `<div class="pa-ss-tabs-header">`;
+                        rowHtml += `<select class="pa-ss-tab-select" onchange="switchScreenshotTab('${tabGroupId}', this.value)">`;
+                        allScreenshotsForPos.forEach((ss, i) => {
+                            rowHtml += `<option value="${i}">\u00cdndice ${ss.scenarioKey} (Linha ${Number(ss.scenarioKey) + 1} do CSV)</option>`;
+                        });
+                        rowHtml += `</select>`;
+                        rowHtml += `<span class="pa-ss-tab-count">${totalCount} iterações</span>`;
+                        rowHtml += `</div>`;
+
+                        allScreenshotsForPos.forEach((ss, i) => {
+                            const display = i === 0 ? '' : 'display:none;';
+                            rowHtml += `<div class="pa-ss-tab-panel" data-tab-group="${tabGroupId}" data-tab-index="${i}" style="${display}">`;
+                            rowHtml += `<img src="${ss.base64}" class="pa-screenshot-thumb" onclick="openScreenshotInNewTab(this.src)" title="Clique para ampliar em nova aba \u2014 \u00cdndice ${ss.scenarioKey}"/>`;
+                            rowHtml += `</div>`;
+                        });
+                        rowHtml += `</div>`;
+                    } else {
+                        // Somente uma iteração — mostra direto
+                        const ss = allScreenshotsForPos[0];
+                        rowHtml += `<img src="${ss.base64}" class="pa-screenshot-thumb" onclick="openScreenshotInNewTab(this.src)" title="Clique para ampliar em nova aba"/>`;
+                    }
+
+                    rowHtml += `</div></div>`;
+                }
+            }
+
             // Recursive Calls se houver
             if (stepResult.callResults && stepResult.callResults.length > 0) {
                 rowHtml += `<div style="margin-left: 50px; margin-bottom: 4px;">`;
@@ -264,8 +402,10 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo) {
                         const etapaId = `etapa_${depth}_${globalLineNumber}_${Math.random().toString(36).substr(2, 9)}`;
                         const stepCount = group.steps.length;
                         const hasError = group.hasError;
-                        const regionColor = hasError ? '#dc2626' : '#2563eb';
-                        const regionBg = hasError ? '#fef2f2' : '#eff6ff';
+                        const colorIdx = hashLabelToColorIndex(group.label);
+                        const palette = REGION_COLORS[colorIdx];
+                        const regionColor = hasError ? '#dc2626' : palette.border;
+                        const regionBg = hasError ? '#fef2f2' : palette.bg;
 
                         // ═══ LINHA: Região [Nome] (header) ═══
                         html += `<div class="pa-region-block" style="border-left: 3px solid ${regionColor};">`;
@@ -322,18 +462,72 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo) {
         stepsHtml = '<p class="text-gray-500">Nenhum detalhe de step encontrado.</p>';
     }
 
-    // Galeria de Screenshots HTML
+    // ═══ Painel de Dados CSV por Iteração ═══
+    let rowDataHtml = '';
+    if (rowEvents && rowEvents.byRow && Object.keys(rowEvents.byRow).length > 0) {
+        const rowKeys = Object.keys(rowEvents.byRow).sort((a, b) => Number(a) - Number(b));
+        // Extrair csvData do primeiro evento ROW_START de cada row
+        const rowSummaries = rowKeys.map(key => {
+            const startEvt = rowEvents.byRow[key].find(e => e.event === 'ROW_START' && e.csvData);
+            return { rowId: key, csvData: startEvt ? startEvt.csvData : null, events: rowEvents.byRow[key] };
+        }).filter(r => r.csvData);
+
+        if (rowSummaries.length > 0) {
+            // Obter colunas do CSV
+            const csvColumns = Object.keys(rowSummaries[0].csvData);
+            
+            rowDataHtml += `<div class="bg-white rounded-lg shadow border border-gray-100 p-5 mb-8">`;
+            rowDataHtml += `<h3 class="text-lg font-bold text-gray-800 mb-3">📊 Dados CSV por Iteração (${rowSummaries.length} linhas)</h3>`;
+            rowDataHtml += `<div style="overflow-x: auto;">`;
+            rowDataHtml += `<table class="w-full border-collapse text-sm">`;
+            rowDataHtml += `<thead><tr style="background: #f1f5f9;">`;
+            rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">#</th>`;
+            csvColumns.forEach(col => {
+                rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">${col}</th>`;
+            });
+            rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Eventos</th>`;
+            rowDataHtml += `</tr></thead><tbody>`;
+            rowSummaries.forEach((row, idx) => {
+                const bgColor = idx % 2 === 0 ? 'white' : '#f9fafb';
+                rowDataHtml += `<tr style="background: ${bgColor};">`;
+                rowDataHtml += `<td class="border border-gray-200 px-3 py-2 font-mono font-bold text-blue-600">${row.rowId}</td>`;
+                csvColumns.forEach(col => {
+                    rowDataHtml += `<td class="border border-gray-200 px-3 py-2">${row.csvData[col] || '-'}</td>`;
+                });
+                rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-gray-500">${row.events.length} eventos</td>`;
+                rowDataHtml += `</tr>`;
+            });
+            rowDataHtml += `</tbody></table></div></div>`;
+        }
+    }
+
+    // Galeria de Screenshots HTML com selector de índice
     let screenshotsHtml = '';
     if (screenshotsContent.length > 0) {
-        screenshotsHtml += '<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">';
+        // Obter índices únicos disponíveis
+        const uniqueIndices = [...new Set(screenshotsContent.map(s => s.scenarioIndex))].sort((a, b) => a - b);
+
+        // Selector dropdown
+        screenshotsHtml += `<div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">`;
+        screenshotsHtml += `<label for="screenshot-index-select" style="font-size: 14px; font-weight: 600; color: #374151;">Filtrar por índice de dados:</label>`;
+        screenshotsHtml += `<select id="screenshot-index-select" onchange="filterScreenshots(this.value)" style="padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background: white; cursor: pointer; min-width: 200px;">`;
+        screenshotsHtml += `<option value="all">Todos (${screenshotsContent.length} screenshots)</option>`;
+        uniqueIndices.forEach(idx => {
+            const count = screenshotsContent.filter(s => s.scenarioIndex === idx).length;
+            screenshotsHtml += `<option value="${idx}">Índice ${idx} (${count} screenshot${count > 1 ? 's' : ''})</option>`;
+        });
+        screenshotsHtml += `</select>`;
+        screenshotsHtml += `<span id="screenshot-count-label" style="font-size: 13px; color: #6b7280;">Exibindo ${screenshotsContent.length} de ${screenshotsContent.length}</span>`;
+        screenshotsHtml += `</div>`;
+
+        // Grid de screenshots
+        screenshotsHtml += '<div id="screenshot-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">';
         screenshotsContent.forEach((img, i) => {
             const timeStr = new Date(img.timestamp).toLocaleTimeString();
             screenshotsHtml += `
-                <div class="border border-gray-200 rounded p-2 bg-white shadow-sm hover:shadow-md transition">
+                <div class="screenshot-card border border-gray-200 rounded p-2 bg-white shadow-sm hover:shadow-md transition" data-scenario-index="${img.scenarioIndex}">
                     <p class="text-xs text-gray-500 mb-1">⏰ ${timeStr} (Cenário ${img.scenarioIndex || '1'})</p>
-                    <a href="${img.base64}" target="_blank">
-                        <img src="${img.base64}" class="w-full h-auto cursor-pointer rounded border border-gray-100" title="Clique para ampliar"/>
-                    </a>
+                    <img src="${img.base64}" class="w-full h-auto cursor-pointer rounded border border-gray-100" title="Clique para ampliar" onclick="openScreenshotInNewTab(this.src)" style="cursor: zoom-in;"/>
                 </div>
             `;
         });
@@ -437,6 +631,60 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo) {
 
             /* Steps list container */
             .pa-steps-list { padding: 0; }
+
+            /* Screenshot cards */
+            .screenshot-card img { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+            .screenshot-card img:hover { transform: scale(1.02); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+
+            /* Screenshot index selector */
+            #screenshot-index-select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+
+            /* Screenshot inline preview in step rows */
+            .pa-screenshot-preview {
+                margin: 4px 14px 8px 56px;
+                border: 1px solid #e5e7eb; border-radius: 8px;
+                overflow: hidden; background: #f9fafb;
+            }
+            .pa-screenshot-toggle {
+                padding: 8px 12px; font-size: 13px; font-weight: 600;
+                color: #2563eb; cursor: pointer; user-select: none;
+                display: flex; align-items: center; gap: 6px;
+                transition: background 0.15s;
+            }
+            .pa-screenshot-toggle:hover { background: #eff6ff; }
+            .pa-ss-chevron {
+                font-size: 12px; color: #6b7280; transition: transform 0.2s ease;
+                display: inline-block;
+            }
+            .pa-ss-chevron.pa-open { transform: rotate(0deg); }
+            .pa-ss-chevron:not(.pa-open) { transform: rotate(-90deg); }
+            .pa-screenshot-img-container {
+                padding: 8px; border-top: 1px solid #e5e7eb;
+            }
+            .pa-screenshot-thumb {
+                max-width: 100%; max-height: 400px; border-radius: 6px;
+                cursor: zoom-in; border: 1px solid #d1d5db;
+                transition: box-shadow 0.2s ease;
+            }
+            .pa-screenshot-thumb:hover {
+                box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            }
+
+            /* Screenshot iteration tabs */
+            .pa-ss-tabs-container { width: 100%; }
+            .pa-ss-tabs-header {
+                display: flex; align-items: center; gap: 10px;
+                padding: 8px 0 8px 0; flex-wrap: wrap;
+            }
+            .pa-ss-tab-select {
+                padding: 5px 10px; border: 1px solid #d1d5db; border-radius: 6px;
+                font-size: 13px; background: white; cursor: pointer;
+                color: #374151; font-weight: 500;
+            }
+            .pa-ss-tab-select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
+            .pa-ss-tab-count {
+                font-size: 12px; color: #9ca3af; font-weight: 500;
+            }
         </style>
     </head>
     <body class="gradient-bg min-h-screen p-8 text-gray-800">
@@ -474,6 +722,8 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo) {
                 </div>
             </div>
 
+            ${rowDataHtml}
+
             <div class="mb-8">
                 <h2 class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Passo a Passo (Steps)</h2>
                 ${stepsHtml}
@@ -489,6 +739,57 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo) {
                 ${envInfo ? `<p class="mt-2 text-xs">Environment Info: OS: ${envInfo.os || '-'} | User: ${envInfo.user || '-'}</p>` : ''}
             </footer>
         </div>
+
+        <script>
+        // Abre screenshot numa nova aba usando Blob (evita problema com data-URI longa no href)
+        function openScreenshotInNewTab(base64Src) {
+            try {
+                var parts = base64Src.split(',');
+                var mime = parts[0].match(/:(.*?);/)[1];
+                var bstr = atob(parts[1]);
+                var n = bstr.length;
+                var u8arr = new Uint8Array(n);
+                for (var i = 0; i < n; i++) u8arr[i] = bstr.charCodeAt(i);
+                var blob = new Blob([u8arr], { type: mime });
+                var url = URL.createObjectURL(blob);
+                window.open(url, '_blank');
+            } catch(e) {
+                console.error('Erro ao abrir screenshot:', e);
+                // Fallback: tenta abrir direto (pode não funcionar para imagens grandes)
+                var w = window.open('', '_blank');
+                if (w) { w.document.write('<img src="' + base64Src + '" style="max-width:100%;height:auto;"/>'); w.document.close(); }
+            }
+        }
+
+        // Filtra screenshots pelo índice selecionado
+        function filterScreenshots(value) {
+            var cards = document.querySelectorAll('.screenshot-card');
+            var shown = 0;
+            var total = cards.length;
+            cards.forEach(function(card) {
+                if (value === 'all' || card.getAttribute('data-scenario-index') === value) {
+                    card.style.display = '';
+                    shown++;
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+            var label = document.getElementById('screenshot-count-label');
+            if (label) label.textContent = 'Exibindo ' + shown + ' de ' + total;
+        }
+
+        // Alterna entre screenshots de diferentes iterações de dados (CSV rows)
+        function switchScreenshotTab(tabGroupId, selectedIndex) {
+            var panels = document.querySelectorAll('.pa-ss-tab-panel[data-tab-group="' + tabGroupId + '"]');
+            panels.forEach(function(panel) {
+                if (panel.getAttribute('data-tab-index') === selectedIndex) {
+                    panel.style.display = '';
+                } else {
+                    panel.style.display = 'none';
+                }
+            });
+        }
+        </script>
     </body>
     </html>
     `;
@@ -544,10 +845,13 @@ async function generateRichReport(projectRoot) {
             };
         }).filter(s => s.base64);
 
-        // Env info - opcional do surefire - omitido por enquanto para simplicidade ou lido aqui de env se fosse necessário
+        // Ler eventos de log por linha CSV
+        console.log('📊 Lendo eventos por linha CSV...');
+        const rowEvents = readRowEvents(projectRoot);
+        console.log(`📊 Total de eventos: ${rowEvents.allEvents.length}, Linhas CSV: ${Object.keys(rowEvents.byRow).length}`);
 
         // Build HTML
-        const finalHtml = buildHtmlReport(primaryFeature, featureDetails, screenshotsContent, {});
+        const finalHtml = buildHtmlReport(primaryFeature, featureDetails, screenshotsContent, {}, rowEvents);
 
         // Save
         const timestampToken = Date.now();
@@ -565,5 +869,6 @@ async function generateRichReport(projectRoot) {
 }
 
 module.exports = {
-    generateRichReport
+    generateRichReport,
+    readRowEvents
 };
