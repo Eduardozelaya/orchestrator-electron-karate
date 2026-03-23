@@ -128,7 +128,7 @@ function hashLabelToColorIndex(label) {
     return Math.abs(hash) % REGION_COLORS.length;
 }
 
-function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, rowEvents) {
+function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, rowEvents, stdoutRowEvents) {
     // Calculo de cor base no status
     let statusClass = summary.failed ? 'text-red-500 bg-red-100 border-red-500' : 'text-green-500 bg-green-100 border-green-500';
     let statusIcon = summary.failed ? '❌ Falhou' : '✅ Sucesso';
@@ -225,6 +225,63 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
     });
     const scenarioKeys = Object.keys(screenshotsByScenario).sort((a, b) => Number(a) - Number(b));
     const numScenarios = scenarioKeys.length;
+
+    // Extrair labels do CSV via rowEvents para headers mais descritivos
+    const rowLabels = {};
+    if (rowEvents && rowEvents.byRow) {
+        Object.keys(rowEvents.byRow).forEach(key => {
+            const startEvt = rowEvents.byRow[key].find(e => e.event === 'ROW_START' && e.label);
+            if (startEvt) rowLabels[key] = startEvt.label;
+        });
+    }
+
+    // Construir resumo por linha a partir dos eventos do stdout (usado por renderSteps e galeria)
+    const rowExecSummaries = {};
+    if (stdoutRowEvents && stdoutRowEvents.length > 0) {
+        stdoutRowEvents.forEach(evt => {
+            const idx = evt.rowIndex;
+            if (idx === undefined || idx === null) return;
+            if (!rowExecSummaries[idx]) {
+                rowExecSummaries[idx] = { index: idx, label: '', status: null, steps: [], errorMessage: null, endMessage: null, startTs: null, endTs: null, screenshots: 0, csvData: null };
+            }
+            const row = rowExecSummaries[idx];
+            switch (evt.type) {
+                case 'ROW_START':
+                    row.label = evt.label || `Linha ${idx + 1}`;
+                    row.startTs = Date.now();
+                    break;
+                case 'ROW_END':
+                    row.status = evt.status;
+                    row.endTs = Date.now();
+                    break;
+                case 'ROW_END_MSG':
+                    row.endMessage = evt.message;
+                    break;
+                case 'ROW_FAIL_REASON':
+                    row.errorMessage = evt.error;
+                    break;
+                case 'STEP':
+                    row.steps.push(evt.step);
+                    break;
+                case 'ROW_DATA':
+                    if (evt.csvData) row.csvData = evt.csvData;
+                    break;
+                case 'SCREENSHOT':
+                case 'SCREENSHOT_FAIL':
+                    row.screenshots++;
+                    if (evt.type === 'SCREENSHOT_FAIL' && evt.error) {
+                        row.errorMessage = row.errorMessage || evt.error;
+                    }
+                    break;
+            }
+        });
+    }
+    // Enriquecer rowLabels com labels dos stdout events
+    Object.keys(rowExecSummaries).forEach(k => {
+        if (rowExecSummaries[k].label && !rowLabels[k]) {
+            rowLabels[k] = rowExecSummaries[k].label;
+        }
+    });
 
     // Contador de posição do screenshot dentro de uma iteração
     let screenshotPositionCounter = 0;
@@ -352,7 +409,12 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
                         rowHtml += `<div class="pa-ss-tabs-header">`;
                         rowHtml += `<select class="pa-ss-tab-select" onchange="switchScreenshotTab('${tabGroupId}', this.value)">`;
                         allScreenshotsForPos.forEach((ss, i) => {
-                            rowHtml += `<option value="${i}">\u00cdndice ${ss.scenarioKey} (Linha ${Number(ss.scenarioKey) + 1} do CSV)</option>`;
+                            const ssLabel = rowLabels[String(ss.scenarioKey)] || '';
+                            const ssLabelSuffix = ssLabel ? ` \u2014 ${ssLabel}` : '';
+                            // Status da linha a partir dos eventos acumulados
+                            const ssExec = rowExecSummaries[ss.scenarioKey];
+                            const ssStatusEmoji = ssExec ? (ssExec.status === 'PASSED' ? '\u2705 ' : ssExec.status === 'FAILED' ? '\u274C ' : '') : '';
+                            rowHtml += `<option value="${i}">${ssStatusEmoji}Linha ${Number(ss.scenarioKey) + 1} do CSV${ssLabelSuffix}</option>`;
                         });
                         rowHtml += `</select>`;
                         rowHtml += `<span class="pa-ss-tab-count">${totalCount} iterações</span>`;
@@ -462,76 +524,217 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
         stepsHtml = '<p class="text-gray-500">Nenhum detalhe de step encontrado.</p>';
     }
 
-    // ═══ Painel de Dados CSV por Iteração ═══
+    // ═══ Painel de Execução por Linha do CSV ═══
     let rowDataHtml = '';
-    if (rowEvents && rowEvents.byRow && Object.keys(rowEvents.byRow).length > 0) {
+    const rowExecKeys = Object.keys(rowExecSummaries).sort((a, b) => Number(a) - Number(b));
+    const hasRowExecData = rowExecKeys.length > 0;
+
+    // Extrair CSV data dos stdoutRowEvents (@@ROW_DATA) ou fallback para JSONL
+    let csvRowSummaries = [];
+    // Primeiro: tentar dos rowExecSummaries (vindos do stdout via @@ROW_DATA)
+    const rowsWithCsvData = rowExecKeys.filter(k => rowExecSummaries[k].csvData);
+    if (rowsWithCsvData.length > 0) {
+        csvRowSummaries = rowsWithCsvData.map(key => ({
+            rowId: key, csvData: rowExecSummaries[key].csvData
+        }));
+    }
+    // Fallback: tentar dos rowEvents (JSONL) se não veio do stdout
+    if (csvRowSummaries.length === 0 && rowEvents && rowEvents.byRow && Object.keys(rowEvents.byRow).length > 0) {
         const rowKeys = Object.keys(rowEvents.byRow).sort((a, b) => Number(a) - Number(b));
-        // Extrair csvData do primeiro evento ROW_START de cada row
-        const rowSummaries = rowKeys.map(key => {
+        csvRowSummaries = rowKeys.map(key => {
             const startEvt = rowEvents.byRow[key].find(e => e.event === 'ROW_START' && e.csvData);
             return { rowId: key, csvData: startEvt ? startEvt.csvData : null, events: rowEvents.byRow[key] };
         }).filter(r => r.csvData);
+    }
 
-        if (rowSummaries.length > 0) {
-            // Obter colunas do CSV
-            const csvColumns = Object.keys(rowSummaries[0].csvData);
-            
-            rowDataHtml += `<div class="bg-white rounded-lg shadow border border-gray-100 p-5 mb-8">`;
-            rowDataHtml += `<h3 class="text-lg font-bold text-gray-800 mb-3">📊 Dados CSV por Iteração (${rowSummaries.length} linhas)</h3>`;
-            rowDataHtml += `<div style="overflow-x: auto;">`;
-            rowDataHtml += `<table class="w-full border-collapse text-sm">`;
-            rowDataHtml += `<thead><tr style="background: #f1f5f9;">`;
-            rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">#</th>`;
+    if (hasRowExecData || csvRowSummaries.length > 0) {
+        const totalExec = rowExecKeys.length;
+        const passedExec = rowExecKeys.filter(k => rowExecSummaries[k].status === 'PASSED').length;
+        const failedExec = rowExecKeys.filter(k => rowExecSummaries[k].status === 'FAILED').length;
+
+        rowDataHtml += `<div class="bg-white rounded-lg shadow border border-gray-100 p-5 mb-8">`;
+        rowDataHtml += `<h3 class="text-lg font-bold text-gray-800 mb-3">📊 Execução por Linha do CSV</h3>`;
+
+        // KPIs de execução por linha
+        if (hasRowExecData) {
+            rowDataHtml += `<div style="display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap;">`;
+            rowDataHtml += `<div style="padding: 10px 20px; border-radius: 8px; background: #f0fdf4; border: 1px solid #bbf7d0; text-align: center;">`;
+            rowDataHtml += `<div style="font-size: 24px; font-weight: 700; color: #16a34a;">${passedExec}</div>`;
+            rowDataHtml += `<div style="font-size: 12px; color: #15803d; text-transform: uppercase; font-weight: 600;">Sucesso</div></div>`;
+            rowDataHtml += `<div style="padding: 10px 20px; border-radius: 8px; background: #fef2f2; border: 1px solid #fecaca; text-align: center;">`;
+            rowDataHtml += `<div style="font-size: 24px; font-weight: 700; color: #dc2626;">${failedExec}</div>`;
+            rowDataHtml += `<div style="font-size: 12px; color: #b91c1c; text-transform: uppercase; font-weight: 600;">Falha</div></div>`;
+            rowDataHtml += `<div style="padding: 10px 20px; border-radius: 8px; background: #f8fafc; border: 1px solid #e2e8f0; text-align: center;">`;
+            rowDataHtml += `<div style="font-size: 24px; font-weight: 700; color: #475569;">${totalExec}</div>`;
+            rowDataHtml += `<div style="font-size: 12px; color: #64748b; text-transform: uppercase; font-weight: 600;">Total</div></div>`;
+            rowDataHtml += `</div>`;
+
+            // Resumo textual
+            if (failedExec === 0 && passedExec > 0) {
+                rowDataHtml += `<div style="padding: 10px 16px; border-radius: 8px; background: #f0fdf4; border: 1px solid #bbf7d0; margin-bottom: 16px; font-size: 14px; color: #15803d; font-weight: 600;">`;
+                rowDataHtml += `✅ ${passedExec} de ${totalExec} NFs criadas com sucesso.</div>`;
+            } else if (failedExec > 0) {
+                const failedIndices = rowExecKeys.filter(k => rowExecSummaries[k].status === 'FAILED').map(k => Number(k) + 1);
+                rowDataHtml += `<div style="padding: 10px 16px; border-radius: 8px; background: #fef2f2; border: 1px solid #fecaca; margin-bottom: 16px; font-size: 14px; color: #b91c1c; font-weight: 600;">`;
+                rowDataHtml += `⚠️ ${passedExec} de ${totalExec} NFs criadas com sucesso. Falhas nas linhas ${failedIndices.join(', ')}.</div>`;
+            }
+        }
+
+        // Tabela detalhada por linha
+        rowDataHtml += `<div style="overflow-x: auto;">`;
+        rowDataHtml += `<table class="w-full border-collapse text-sm">`;
+        rowDataHtml += `<thead><tr style="background: #f1f5f9;">`;
+        rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">#</th>`;
+        rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Label</th>`;
+        rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Status</th>`;
+        rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Mensagem</th>`;
+        rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Último Step</th>`;
+        rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Screenshots</th>`;
+
+        // Se temos dados CSV, adicionar colunas
+        const hasCsvData = csvRowSummaries.length > 0;
+        let csvColumns = [];
+        if (hasCsvData) {
+            csvColumns = Object.keys(csvRowSummaries[0].csvData);
             csvColumns.forEach(col => {
                 rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">${col}</th>`;
             });
-            rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Eventos</th>`;
-            rowDataHtml += `</tr></thead><tbody>`;
-            rowSummaries.forEach((row, idx) => {
-                const bgColor = idx % 2 === 0 ? 'white' : '#f9fafb';
-                rowDataHtml += `<tr style="background: ${bgColor};">`;
-                rowDataHtml += `<td class="border border-gray-200 px-3 py-2 font-mono font-bold text-blue-600">${row.rowId}</td>`;
-                csvColumns.forEach(col => {
-                    rowDataHtml += `<td class="border border-gray-200 px-3 py-2">${row.csvData[col] || '-'}</td>`;
-                });
-                rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-gray-500">${row.events.length} eventos</td>`;
-                rowDataHtml += `</tr>`;
-            });
-            rowDataHtml += `</tbody></table></div></div>`;
         }
+
+        rowDataHtml += `</tr></thead><tbody>`;
+
+        // Combinar dados de ambas as fontes
+        const allRowKeys = [...new Set([...rowExecKeys, ...csvRowSummaries.map(r => r.rowId)])].sort((a, b) => Number(a) - Number(b));
+
+        allRowKeys.forEach((key, idx) => {
+            const exec = rowExecSummaries[key] || {};
+            const csvRow = csvRowSummaries.find(r => r.rowId === key);
+            const isPassed = exec.status === 'PASSED';
+            const isFailed = exec.status === 'FAILED';
+            const bgColor = isFailed ? '#fef2f2' : isPassed ? '#f0fdf4' : (idx % 2 === 0 ? 'white' : '#f9fafb');
+
+            rowDataHtml += `<tr style="background: ${bgColor};">`;
+            rowDataHtml += `<td class="border border-gray-200 px-3 py-2 font-mono font-bold text-blue-600">${Number(key) + 1}</td>`;
+            rowDataHtml += `<td class="border border-gray-200 px-3 py-2">${exec.label || rowLabels[key] || '-'}</td>`;
+
+            // Status badge
+            if (isPassed) {
+                rowDataHtml += `<td class="border border-gray-200 px-3 py-2"><span style="background: #dcfce7; color: #16a34a; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;">✅ Passou</span></td>`;
+            } else if (isFailed) {
+                rowDataHtml += `<td class="border border-gray-200 px-3 py-2"><span style="background: #fef2f2; color: #dc2626; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;">❌ Falhou</span></td>`;
+            } else {
+                rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-gray-400">-</td>`;
+            }
+
+            // Mensagem (endMessage ou errorMessage)
+            const msg = isFailed
+                ? (exec.errorMessage || 'Erro durante execução')
+                : (exec.endMessage || '-');
+            const msgColor = isFailed ? 'color: #dc2626;' : '';
+            rowDataHtml += `<td class="border border-gray-200 px-3 py-2" style="${msgColor} max-width: 300px; word-break: break-word;">${msg}</td>`;
+
+            // Último step
+            const lastStep = exec.steps && exec.steps.length > 0 ? exec.steps[exec.steps.length - 1] : '-';
+            rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-gray-500" style="max-width: 250px; word-break: break-word;">${lastStep}</td>`;
+
+            // Screenshots
+            rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-center">${exec.screenshots || 0}</td>`;
+
+            // Dados CSV se disponíveis
+            if (hasCsvData && csvRow) {
+                csvColumns.forEach(col => {
+                    rowDataHtml += `<td class="border border-gray-200 px-3 py-2">${csvRow.csvData[col] || '-'}</td>`;
+                });
+            } else if (hasCsvData) {
+                csvColumns.forEach(() => {
+                    rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-gray-300">-</td>`;
+                });
+            }
+
+            rowDataHtml += `</tr>`;
+        });
+
+        rowDataHtml += `</tbody></table></div></div>`;
     }
 
-    // Galeria de Screenshots HTML com selector de índice
+    // Galeria de Screenshots — agrupada por Linha do CSV com select para navegação
     let screenshotsHtml = '';
     if (screenshotsContent.length > 0) {
-        // Obter índices únicos disponíveis
         const uniqueIndices = [...new Set(screenshotsContent.map(s => s.scenarioIndex))].sort((a, b) => a - b);
 
-        // Selector dropdown
-        screenshotsHtml += `<div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">`;
-        screenshotsHtml += `<label for="screenshot-index-select" style="font-size: 14px; font-weight: 600; color: #374151;">Filtrar por índice de dados:</label>`;
-        screenshotsHtml += `<select id="screenshot-index-select" onchange="filterScreenshots(this.value)" style="padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background: white; cursor: pointer; min-width: 200px;">`;
-        screenshotsHtml += `<option value="all">Todos (${screenshotsContent.length} screenshots)</option>`;
+        // Obter status de cada linha (do stdoutRowEvents)
+        const rowStatusMap = {};
+        if (stdoutRowEvents && stdoutRowEvents.length > 0) {
+            stdoutRowEvents.forEach(evt => {
+                if (evt.type === 'ROW_END' && evt.rowIndex !== undefined) {
+                    rowStatusMap[evt.rowIndex] = evt.status; // PASSED ou FAILED
+                }
+            });
+        }
+
+        // Select para navegar até a seção de uma linha específica
+        screenshotsHtml += `<div style="margin-bottom: 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">`;
+        screenshotsHtml += `<label for="ss-row-select" style="font-size: 14px; font-weight: 600; color: #374151;">Ir para linha:</label>`;
+        screenshotsHtml += `<select id="ss-row-select" onchange="jumpToRowScreenshots(this.value)" style="padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background: white; cursor: pointer; min-width: 280px;">`;
+        screenshotsHtml += `<option value="">Selecione uma linha do CSV...</option>`;
         uniqueIndices.forEach(idx => {
             const count = screenshotsContent.filter(s => s.scenarioIndex === idx).length;
-            screenshotsHtml += `<option value="${idx}">Índice ${idx} (${count} screenshot${count > 1 ? 's' : ''})</option>`;
+            const label = rowLabels[String(idx)] || '';
+            const status = rowStatusMap[idx];
+            const statusEmoji = status === 'PASSED' ? '✅' : status === 'FAILED' ? '❌' : '⏳';
+            const labelSuffix = label ? ` — ${label}` : '';
+            screenshotsHtml += `<option value="ss-row-group-${idx}">${statusEmoji} Linha ${Number(idx) + 1}${labelSuffix} (${count} screenshot${count > 1 ? 's' : ''})</option>`;
         });
         screenshotsHtml += `</select>`;
-        screenshotsHtml += `<span id="screenshot-count-label" style="font-size: 13px; color: #6b7280;">Exibindo ${screenshotsContent.length} de ${screenshotsContent.length}</span>`;
+        screenshotsHtml += `<span style="font-size: 13px; color: #6b7280;">${screenshotsContent.length} screenshots em ${uniqueIndices.length} linha${uniqueIndices.length > 1 ? 's' : ''}</span>`;
         screenshotsHtml += `</div>`;
 
-        // Grid de screenshots
-        screenshotsHtml += '<div id="screenshot-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">';
-        screenshotsContent.forEach((img, i) => {
-            const timeStr = new Date(img.timestamp).toLocaleTimeString();
-            screenshotsHtml += `
-                <div class="screenshot-card border border-gray-200 rounded p-2 bg-white shadow-sm hover:shadow-md transition" data-scenario-index="${img.scenarioIndex}">
-                    <p class="text-xs text-gray-500 mb-1">⏰ ${timeStr} (Cenário ${img.scenarioIndex || '1'})</p>
-                    <img src="${img.base64}" class="w-full h-auto cursor-pointer rounded border border-gray-100" title="Clique para ampliar" onclick="openScreenshotInNewTab(this.src)" style="cursor: zoom-in;"/>
-                </div>
-            `;
+        // Seções colapsáveis por linha
+        uniqueIndices.forEach(idx => {
+            const rowScreenshots = screenshotsContent.filter(s => s.scenarioIndex === idx);
+            const label = rowLabels[String(idx)] || '';
+            const status = rowStatusMap[idx];
+            const isFailed = status === 'FAILED';
+            const statusEmoji = status === 'PASSED' ? '✅' : isFailed ? '❌' : '⏳';
+            const statusText = status === 'PASSED' ? 'Passou' : isFailed ? 'Falhou' : 'Pendente';
+            const sectionBorder = isFailed ? '#fecaca' : '#d1d5db';
+            const sectionBg = isFailed ? '#fef2f2' : '#f8fafc';
+            const contentId = `ss-row-content-${idx}`;
+            const groupId = `ss-row-group-${idx}`;
+
+            screenshotsHtml += `<div id="${groupId}" class="ss-row-group" style="border: 1px solid ${sectionBorder}; border-radius: 10px; margin-bottom: 16px; overflow: hidden;">`;
+
+            // Header colapsável
+            screenshotsHtml += `<div class="ss-row-header" style="background: ${sectionBg}; padding: 12px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px; user-select: none;" onclick="var c=document.getElementById('${contentId}'); c.classList.toggle('pa-hidden'); this.querySelector('.ss-chevron').classList.toggle('pa-open')">`;
+            screenshotsHtml += `<span class="ss-chevron pa-open" style="font-size: 14px; color: #6b7280; transition: transform 0.2s; display: inline-block;">▾</span>`;
+            screenshotsHtml += `<span style="font-size: 15px;">${statusEmoji}</span>`;
+            screenshotsHtml += `<span style="font-weight: 700; font-size: 14px; color: #1f2937;">Execução Linha ${Number(idx) + 1}</span>`;
+            if (label) {
+                screenshotsHtml += `<span style="font-size: 13px; color: #6b7280;">— ${label}</span>`;
+            }
+            screenshotsHtml += `<span style="margin-left: auto; font-size: 12px; padding: 2px 10px; border-radius: 4px; font-weight: 600; background: ${isFailed ? '#fef2f2; color: #dc2626; border: 1px solid #fecaca' : status === 'PASSED' ? '#f0fdf4; color: #16a34a; border: 1px solid #bbf7d0' : '#f8fafc; color: #64748b; border: 1px solid #e2e8f0'};">${statusText}</span>`;
+            screenshotsHtml += `<span style="font-size: 12px; color: #9ca3af;">${rowScreenshots.length} screenshot${rowScreenshots.length > 1 ? 's' : ''}</span>`;
+            screenshotsHtml += `</div>`;
+
+            // Conteúdo: grid de screenshots desta linha
+            screenshotsHtml += `<div id="${contentId}" style="padding: 12px;">`;
+            screenshotsHtml += `<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">`;
+            rowScreenshots.forEach((img, i) => {
+                const timeStr = new Date(img.timestamp).toLocaleTimeString();
+                const imgIsFail = img.isFail || false;
+                const borderStyle = imgIsFail ? 'border: 2px solid #dc2626;' : '';
+                const failBadge = imgIsFail ? '<span style="background: #fef2f2; color: #dc2626; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600;">FALHA</span> ' : '';
+                screenshotsHtml += `
+                    <div class="screenshot-card border border-gray-200 rounded p-2 bg-white shadow-sm hover:shadow-md transition" style="${borderStyle}">
+                        <p class="text-xs text-gray-500 mb-1">${failBadge}📸 Screenshot ${i + 1} — ⏰ ${timeStr}</p>
+                        ${imgIsFail && img.errorMsg ? `<p class="text-xs text-red-600 mb-1">${img.errorMsg}</p>` : ''}
+                        <img src="${img.base64}" class="w-full h-auto cursor-pointer rounded border border-gray-100" title="Clique para ampliar — Linha ${Number(idx) + 1}${label ? ' — ' + label : ''}" onclick="openScreenshotInNewTab(this.src)" style="cursor: zoom-in;"/>
+                    </div>
+                `;
+            });
+            screenshotsHtml += `</div></div>`;
+            screenshotsHtml += `</div>`;
         });
-        screenshotsHtml += '</div>';
     } else {
         screenshotsHtml = '<p class="text-gray-500">Nenhum screenshot capturado nesta execução.</p>';
     }
@@ -636,8 +839,15 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
             .screenshot-card img { transition: transform 0.2s ease, box-shadow 0.2s ease; }
             .screenshot-card img:hover { transform: scale(1.02); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 
-            /* Screenshot index selector */
-            #screenshot-index-select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+            /* Screenshot row select */
+            #ss-row-select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+
+            /* Screenshot row group sections */
+            .ss-row-group { transition: box-shadow 0.3s; }
+            .ss-row-header:hover { filter: brightness(0.97); }
+            .ss-chevron { transition: transform 0.2s ease; display: inline-block; }
+            .ss-chevron.pa-open { transform: rotate(0deg); }
+            .ss-chevron:not(.pa-open) { transform: rotate(-90deg); }
 
             /* Screenshot inline preview in step rows */
             .pa-screenshot-preview {
@@ -761,21 +971,24 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
             }
         }
 
-        // Filtra screenshots pelo índice selecionado
-        function filterScreenshots(value) {
-            var cards = document.querySelectorAll('.screenshot-card');
-            var shown = 0;
-            var total = cards.length;
-            cards.forEach(function(card) {
-                if (value === 'all' || card.getAttribute('data-scenario-index') === value) {
-                    card.style.display = '';
-                    shown++;
-                } else {
-                    card.style.display = 'none';
-                }
-            });
-            var label = document.getElementById('screenshot-count-label');
-            if (label) label.textContent = 'Exibindo ' + shown + ' de ' + total;
+        // Navega até a seção de screenshots de uma linha específica
+        function jumpToRowScreenshots(groupId) {
+            if (!groupId) return;
+            var el = document.getElementById(groupId);
+            if (!el) return;
+            // Expande a seção se estiver colapsada
+            var content = el.querySelector('[id^="ss-row-content-"]');
+            if (content && content.classList.contains('pa-hidden')) {
+                content.classList.remove('pa-hidden');
+                var chevron = el.querySelector('.ss-chevron');
+                if (chevron) chevron.classList.add('pa-open');
+            }
+            // Scroll suave até a seção
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            // Flash visual para chamar atenção
+            el.style.transition = 'box-shadow 0.3s';
+            el.style.boxShadow = '0 0 0 3px #3b82f6';
+            setTimeout(function() { el.style.boxShadow = ''; }, 1500);
         }
 
         // Alterna entre screenshots de diferentes iterações de dados (CSV rows)
@@ -800,7 +1013,7 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
  * @param {string} projectRoot Caminho base do projeto com a pasta target/ do Karate.
  * @returns {string|null} Caminho absoluto do HTML report gerado ou null em caso de erro.
  */
-async function generateRichReport(projectRoot) {
+async function generateRichReport(projectRoot, stdoutRowEvents) {
     try {
         const karateReportsDir = path.join(projectRoot, 'target', 'karate-reports');
         const summaryJsonPath = path.join(karateReportsDir, 'karate-summary-json.txt');
@@ -851,7 +1064,7 @@ async function generateRichReport(projectRoot) {
         console.log(`📊 Total de eventos: ${rowEvents.allEvents.length}, Linhas CSV: ${Object.keys(rowEvents.byRow).length}`);
 
         // Build HTML
-        const finalHtml = buildHtmlReport(primaryFeature, featureDetails, screenshotsContent, {}, rowEvents);
+        const finalHtml = buildHtmlReport(primaryFeature, featureDetails, screenshotsContent, {}, rowEvents, stdoutRowEvents || []);
 
         // Save
         const timestampToken = Date.now();

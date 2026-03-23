@@ -66,8 +66,17 @@ function createWindow() {
     console.log('📨 IPC: run-tests chamado');
     console.log('selectedPaths:', selectedPaths);
     console.log('username:', username);
-    console.log('password:', password);
-    return await runTests(selectedPaths, username, password);
+
+    // Callback de progresso: envia eventos em tempo real para o renderer
+    const onProgress = (event) => {
+      try {
+        win.webContents.send('row-progress', event);
+      } catch (err) {
+        // janela pode ter sido fechada
+      }
+    };
+
+    return await runTests(selectedPaths, username, password, onProgress);
   });
 
   ipcMain.handle('list-data-files', async (_, featurePath) => {
@@ -96,8 +105,8 @@ function createWindow() {
     }
 
     try {
-      const basePath = path.join(projectPath, 'src', 'test', 'resources');
-      const absolutePath = path.resolve(basePath, filePath);
+      const resolvedBase = getBasePath() || path.join(projectPath, 'src', 'test', 'resources');
+      const absolutePath = path.resolve(resolvedBase, filePath);
       const dir = path.dirname(absolutePath);
       console.log('📂 Salvando arquivo em:', absolutePath);
       await fsPromises.mkdir(dir, { recursive: true });
@@ -119,9 +128,9 @@ function createWindow() {
     }
   
     try {
-      const basePath = path.join(projectPath, 'src', 'test', 'resources');
-      const absolutePath = path.resolve(basePath, relativePath);
-      
+      const resolvedBase = getBasePath() || path.join(projectPath, 'src', 'test', 'resources');
+      const absolutePath = path.resolve(resolvedBase, relativePath);
+
       console.log('📂 Lendo arquivo em:', absolutePath);
       
       if (!fs.existsSync(absolutePath)) {
@@ -197,8 +206,8 @@ function createWindow() {
     }
 
     try {
-      const basePath = path.join(projectPath, 'src', 'test', 'resources');
-      const sourcePath = path.resolve(basePath, filePath);
+      const resolvedBase = getBasePath() || path.join(projectPath, 'src', 'test', 'resources');
+      const sourcePath = path.resolve(resolvedBase, filePath);
       
       if (!fs.existsSync(sourcePath)) {
         throw new Error(`Arquivo não encontrado: ${sourcePath}`);
@@ -230,8 +239,8 @@ function createWindow() {
     }
 
     try {
-      const basePath = path.join(projectPath, 'src', 'test', 'resources');
-      const targetPath = path.resolve(basePath, filePath);
+      const resolvedBase = getBasePath() || path.join(projectPath, 'src', 'test', 'resources');
+      const targetPath = path.resolve(resolvedBase, filePath);
 
       // Verifica se o arquivo existe
       if (!fs.existsSync(targetPath)) {

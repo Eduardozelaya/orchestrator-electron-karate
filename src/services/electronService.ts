@@ -11,6 +11,21 @@ interface ElectronAPI {
   downloadFile: (path: string) => Promise<void>;
   deleteFile: (path: string) => Promise<void>;
   stopTestExecution: () => Promise<{ success: boolean; error?: string }>;
+  onRowProgress: (callback: (event: RowProgressEvent) => void) => () => void;
+}
+
+export interface RowProgressEvent {
+  type: 'ROW_TOTAL' | 'ROW_START' | 'ROW_END' | 'ROW_END_MSG' | 'ROW_FAIL_REASON' | 'STEP' | 'SCREENSHOT' | 'SCREENSHOT_FAIL' | 'ROW_DATA';
+  featurePath?: string;
+  totalRows?: number;
+  rowIndex?: number;
+  label?: string;
+  status?: string;
+  step?: string;
+  name?: string;
+  message?: string;
+  error?: string;
+  csvData?: Record<string, string>;
 }
 
 declare global {
@@ -221,6 +236,13 @@ export class ElectronService {
       console.error('❌ Erro ao tentar parar execução:', error);
       return false;
     }
+  }
+
+  onRowProgress(callback: (event: RowProgressEvent) => void): () => void {
+    if (!this.isElectronMode || !window.electronAPI?.onRowProgress) {
+      return () => {}; // noop cleanup
+    }
+    return window.electronAPI.onRowProgress(callback);
   }
 
   // Métodos privados para mock data

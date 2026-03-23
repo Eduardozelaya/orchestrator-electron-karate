@@ -29,3 +29,6 @@ bun.lockb
 # Testes e relatórios
 karate-reports/
 target/
+
+# Projetos Karate externos
+karate_Facturacion/
