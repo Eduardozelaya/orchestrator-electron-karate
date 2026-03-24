@@ -262,6 +262,9 @@ const STEP_RE      = /@@STEP:(\d+):(.*)/;
 const SCREENSHOT_RE = /@@SCREENSHOT:(\d+):(.*)/;
 const SCREENSHOT_FAIL_RE = /@@SCREENSHOT_FAIL:(\d+):(.*)/;
 const ROW_DATA_RE   = /@@ROW_DATA:(\d+):(.*)/;
+const RETRY_RE      = /@@RETRY:(\d+):(.*)/;
+const RETRY_OK_RE   = /@@RETRY_OK:(\d+):(.*)/;
+const RETRY_FAIL_RE = /@@RETRY_FAIL:(\d+):(.*)/;
 
 /**
  * Parseia uma linha de stdout e retorna um evento de progresso, ou null.
@@ -298,6 +301,16 @@ function parseProgressLine(line) {
     } catch (e) {
       return null;
     }
+  }
+  // Eventos de retry (acaoComRetry)
+  if ((match = RETRY_OK_RE.exec(line))) {
+    return { type: 'RETRY_OK', rowIndex: parseInt(match[1]), message: match[2].trim() };
+  }
+  if ((match = RETRY_FAIL_RE.exec(line))) {
+    return { type: 'RETRY_FAIL', rowIndex: parseInt(match[1]), message: match[2].trim() };
+  }
+  if ((match = RETRY_RE.exec(line))) {
+    return { type: 'RETRY', rowIndex: parseInt(match[1]), message: match[2].trim() };
   }
   return null;
 }

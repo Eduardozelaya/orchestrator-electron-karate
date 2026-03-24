@@ -140,13 +140,22 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
     const ETAPA_INICIO_RE = /➡️\s*Etapa\s*Inicio\s*:\s*(.*)/i;
     const ETAPA_FIM_RE    = /➡️\s*Etapa\s*Fim\s*:/i;
     const ETAPA_SIMPLES_RE = /➡️\s*Etapa\s*:\s*(.*)/i;
+    // Regex para detectar marcadores @@STEP nos logs ou no texto do step
+    const AT_STEP_LOG_RE = /@@STEP:\d+:(.*)/;
+    const AT_STEP_TEXT_RE = /print\s+['"]@@STEP:/;
 
     /**
      * Classifica um stepResult como marcador de etapa ou step técnico.
      * Retorna: { type: 'etapa_inicio'|'etapa_fim'|'etapa'|'step', label?: string, stepResult }
+     *
+     * Detecta tanto os marcadores ➡️ Etapa quanto os @@STEP: usados nos features Karate.
      */
     function classifyStep(stepResult) {
         const log = stepResult.stepLog ? String(stepResult.stepLog).trim() : null;
+        const doc = stepResult.doc ? String(stepResult.doc).trim() : null;
+        const stepText = (stepResult.step && stepResult.step.text) ? String(stepResult.step.text).trim() : '';
+
+        // Tentar extrair etapa do stepLog (saída avaliada do print)
         if (log) {
             let m;
             if ((m = log.match(ETAPA_INICIO_RE))) {
@@ -158,7 +167,33 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
             if ((m = log.match(ETAPA_SIMPLES_RE))) {
                 return { type: 'etapa', label: m[1].trim(), stepResult };
             }
+            // Detectar @@STEP no log (saída avaliada, ex: "@@STEP:0:Buscando Unidade...")
+            if ((m = log.match(AT_STEP_LOG_RE))) {
+                return { type: 'etapa', label: m[1].trim(), stepResult };
+            }
         }
+
+        // Tentar extrair @@STEP do doc (algumas versões do Karate colocam print output aqui)
+        if (doc) {
+            let m;
+            if ((m = doc.match(AT_STEP_LOG_RE))) {
+                return { type: 'etapa', label: m[1].trim(), stepResult };
+            }
+        }
+
+        // Fallback: detectar @@STEP no texto bruto do step (ex: "print '@@STEP:' + __loop + ':Label'")
+        // Extraímos o rótulo estático da string (a parte após o segundo ':' no literal de string)
+        if (AT_STEP_TEXT_RE.test(stepText)) {
+            const labelMatch = stepText.match(/@@STEP:[^:]*:([^'"]+)/);
+            if (labelMatch) {
+                // Limpa possíveis concatenações de variáveis Karate (ex: "' + VAR" → remove)
+                let rawLabel = labelMatch[1].replace(/['"]\s*\+.*$/, '').trim();
+                if (rawLabel) {
+                    return { type: 'etapa', label: rawLabel, stepResult };
+                }
+            }
+        }
+
         return { type: 'step', stepResult };
     }
 
@@ -216,7 +251,78 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
 
 
 
-    // Agrupar screenshots por scenarioIndex para suportar testes data-driven (N linhas CSV)
+    // ═══ Reatribuir screenshots às linhas CSV corretas usando eventos @@SCREENSHOT do stdout ═══
+    // O Karate gera PNGs com scenarioIndex fixo (índice do cenário, não do __loop).
+    // Usamos mapeamento por ROW (não posicional puro) para lidar com screenshots extras de falha.
+    //
+    // Quando uma linha falha, o Karate automaticamente captura um PNG extra de falha que NÃO tem
+    // evento @@SCREENSHOT correspondente. O mapeamento posicional simples deslocaria todos os PNGs
+    // subsequentes, atribuindo o screenshot de falha à linha errada.
+    //
+    // Algoritmo: processar linha por linha em ordem. Para cada linha:
+    //   1) Atribuir PNGs aos eventos @@SCREENSHOT dessa linha (na ordem)
+    //   2) Se a linha FALHOU, consumir 1 PNG extra como screenshot de falha
+    const screenshotEvents = (stdoutRowEvents || []).filter(e => e.type === 'SCREENSHOT');
+    console.log(`📸 Reatribuição: ${screenshotEvents.length} eventos SCREENSHOT, ${screenshotsContent.length} arquivos PNG`);
+
+    if (screenshotEvents.length > 0 && screenshotsContent.length > 0) {
+        // Ordenar PNGs por timestamp
+        screenshotsContent.sort((a, b) => a.timestamp - b.timestamp);
+
+        // Agrupar eventos SCREENSHOT por rowIndex (preservando ordem de aparição)
+        const eventsByRow = {};
+        screenshotEvents.forEach(evt => {
+            if (!eventsByRow[evt.rowIndex]) eventsByRow[evt.rowIndex] = [];
+            eventsByRow[evt.rowIndex].push(evt);
+        });
+
+        // Precisamos do status de cada linha para detectar falhas — construir um mapa rápido
+        // (rowExecSummaries ainda não existe neste ponto, então usamos stdoutRowEvents direto)
+        const rowStatusForMapping = {};
+        (stdoutRowEvents || []).forEach(evt => {
+            if (evt.type === 'ROW_END' && evt.rowIndex !== undefined) {
+                rowStatusForMapping[evt.rowIndex] = evt.status;
+            }
+        });
+
+        // Todas as linhas que tiveram screenshots OU que falharam (podem ter failure PNG)
+        const allRowsForMapping = [...new Set([
+            ...Object.keys(eventsByRow).map(Number),
+            ...Object.keys(rowStatusForMapping).map(Number)
+        ])].sort((a, b) => a - b);
+
+        let pngIdx = 0;
+        allRowsForMapping.forEach(rowIdx => {
+            const eventsForRow = eventsByRow[rowIdx] || [];
+            const rowFailed = rowStatusForMapping[rowIdx] === 'FAILED';
+
+            // 1) Atribuir PNGs planejados (@@SCREENSHOT events)
+            eventsForRow.forEach(evt => {
+                if (pngIdx < screenshotsContent.length) {
+                    console.log(`   📸 [${pngIdx}] PNG → row ${evt.rowIndex} (${evt.name}) [planejado]`);
+                    screenshotsContent[pngIdx].scenarioIndex = evt.rowIndex;
+                    screenshotsContent[pngIdx].screenshotName = evt.name || '';
+                    pngIdx++;
+                }
+            });
+
+            // 2) Se a linha falhou, consumir 1 PNG extra como screenshot de falha do Karate
+            if (rowFailed && pngIdx < screenshotsContent.length) {
+                console.log(`   📸 [${pngIdx}] PNG → row ${rowIdx} [failure screenshot auto-capturado pelo Karate]`);
+                screenshotsContent[pngIdx].scenarioIndex = rowIdx;
+                screenshotsContent[pngIdx].screenshotName = '';
+                screenshotsContent[pngIdx].isFail = true;
+                pngIdx++;
+            }
+        });
+
+        // PNGs restantes (se houver) mantêm o scenarioIndex original
+        if (pngIdx < screenshotsContent.length) {
+            console.log(`   ⚠️ ${screenshotsContent.length - pngIdx} PNG(s) não mapeados — mantendo scenarioIndex original`);
+        }
+    }
+
+    // Agrupar screenshots por linha CSV (agora com scenarioIndex corrigido)
     const screenshotsByScenario = {};
     screenshotsContent.forEach(s => {
         const key = s.scenarioIndex !== undefined ? s.scenarioIndex : 0;
@@ -242,7 +348,7 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
             const idx = evt.rowIndex;
             if (idx === undefined || idx === null) return;
             if (!rowExecSummaries[idx]) {
-                rowExecSummaries[idx] = { index: idx, label: '', status: null, steps: [], errorMessage: null, endMessage: null, startTs: null, endTs: null, screenshots: 0, csvData: null };
+                rowExecSummaries[idx] = { index: idx, label: '', status: null, steps: [], errorMessage: null, endMessage: null, startTs: null, endTs: null, screenshots: 0, csvData: null, retries: [] };
             }
             const row = rowExecSummaries[idx];
             switch (evt.type) {
@@ -273,6 +379,11 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
                         row.errorMessage = row.errorMessage || evt.error;
                     }
                     break;
+                case 'RETRY':
+                case 'RETRY_FAIL':
+                case 'RETRY_OK':
+                    row.retries.push({ type: evt.type, message: evt.message });
+                    break;
             }
         });
     }
@@ -285,6 +396,15 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
 
     // Contador de posição do screenshot dentro de uma iteração
     let screenshotPositionCounter = 0;
+
+    // ═══ Detecção de execução multi-linha CSV ═══
+    // Quando há múltiplas linhas CSV, o status dos steps na visão geral deve ser contextual:
+    // um step que falhou em apenas 1 de N linhas não deve aparecer como "Falhou" de forma absoluta.
+    const rowExecKeys = Object.keys(rowExecSummaries).sort((a, b) => Number(a) - Number(b));
+    const isMultiRowExec = rowExecKeys.length > 1;
+    const totalRowsExec = rowExecKeys.length;
+    const failedRowsCount = rowExecKeys.filter(k => rowExecSummaries[k].status === 'FAILED').length;
+    const passedRowsCount = rowExecKeys.filter(k => rowExecSummaries[k].status === 'PASSED').length;
 
     // Função recursiva principal para iterar calls aninhadas, agora com agrupamento por etapas estilo Power Automate Desktop
     function renderSteps(scenarioList, depth = 0) {
@@ -339,7 +459,7 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
                 const ms = delayMatch ? delayMatch[1] : '?';
                 actionTitle = 'Aguardar';
                 actionDesc = `Aguardar <code class="pa-var">${ms}</code> ms antes de continuar`;
-            } else if (stepText.match(/driver\.screenshot/)) {
+            } else if (stepText.match(/(?:driver\.)?screenshot\s*\(/)) {
                 actionIcon = '📸';
                 actionTitle = 'Capturar screenshot';
                 actionDesc = `Capturar uma imagem da tela atual para evidência${numScenarios > 1 ? ` (📊 ${numScenarios} iterações de dados)` : ''}`;
@@ -363,10 +483,16 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
 
             let statusDot = '';
             if (isFailed) {
-                statusDot = '<span style="color: #dc2626; margin-left: auto; font-size: 12px;">❌ Falhou</span>';
+                if (isMultiRowExec && failedRowsCount < totalRowsExec) {
+                    // Falha parcial: o step falhou em execução(ões) específica(s), não em todas
+                    statusDot = `<span style="color: #d97706; margin-left: auto; font-size: 12px;">⚠️ Falhou em ${failedRowsCount} de ${totalRowsExec} execuções</span>`;
+                } else {
+                    statusDot = '<span style="color: #dc2626; margin-left: auto; font-size: 12px;">❌ Falhou</span>';
+                }
             }
 
-            rowHtml += `<div class="pa-action-row" style="${isFailed ? 'background: #fef2f2;' : ''}">`;
+            const failBgColor = isFailed ? (isMultiRowExec && failedRowsCount < totalRowsExec ? 'background: #fffbeb;' : 'background: #fef2f2;') : '';
+            rowHtml += `<div class="pa-action-row" style="${failBgColor}">`;
             rowHtml += `<span class="pa-line-num">${globalLineNumber}</span>`;
             rowHtml += `<span class="pa-action-icon">${actionIcon}</span>`;
             rowHtml += `<div class="pa-action-content">`;
@@ -466,8 +592,10 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
                         const hasError = group.hasError;
                         const colorIdx = hashLabelToColorIndex(group.label);
                         const palette = REGION_COLORS[colorIdx];
-                        const regionColor = hasError ? '#dc2626' : palette.border;
-                        const regionBg = hasError ? '#fef2f2' : palette.bg;
+                        // Em execução multi-linha com falha parcial, usar cor de aviso (amarelo) em vez de erro total (vermelho)
+                        const isPartialError = hasError && isMultiRowExec && failedRowsCount < totalRowsExec;
+                        const regionColor = hasError ? (isPartialError ? '#d97706' : '#dc2626') : palette.border;
+                        const regionBg = hasError ? (isPartialError ? '#fffbeb' : '#fef2f2') : palette.bg;
 
                         // ═══ LINHA: Região [Nome] (header) ═══
                         html += `<div class="pa-region-block" style="border-left: 3px solid ${regionColor};">`;
@@ -480,7 +608,11 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
                         html += `<span style="color: #374151; font-size: 14px;">Região</span>`;
                         html += `<span class="pa-label-tag" style="background: ${regionColor}; color: white;">${group.label}</span>`;
                         if (hasError) {
-                            html += `<span style="margin-left: auto; color: #dc2626; font-weight: bold; font-size: 13px;">❌ Erro</span>`;
+                            if (isPartialError) {
+                                html += `<span style="margin-left: auto; color: #d97706; font-weight: bold; font-size: 13px;">⚠️ Falhou em ${failedRowsCount} de ${totalRowsExec}</span>`;
+                            } else {
+                                html += `<span style="margin-left: auto; color: #dc2626; font-weight: bold; font-size: 13px;">❌ Erro</span>`;
+                            }
                         }
                         html += `</div>`;
 
@@ -526,7 +658,7 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
 
     // ═══ Painel de Execução por Linha do CSV ═══
     let rowDataHtml = '';
-    const rowExecKeys = Object.keys(rowExecSummaries).sort((a, b) => Number(a) - Number(b));
+    // rowExecKeys já foi declarado acima para detecção multi-linha
     const hasRowExecData = rowExecKeys.length > 0;
 
     // Extrair CSV data dos stdoutRowEvents (@@ROW_DATA) ou fallback para JSONL
@@ -589,6 +721,7 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
         rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Status</th>`;
         rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Mensagem</th>`;
         rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Último Step</th>`;
+        rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Retries</th>`;
         rowDataHtml += `<th class="border border-gray-200 px-3 py-2 text-left font-semibold text-gray-600">Screenshots</th>`;
 
         // Se temos dados CSV, adicionar colunas
@@ -637,8 +770,34 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
             const lastStep = exec.steps && exec.steps.length > 0 ? exec.steps[exec.steps.length - 1] : '-';
             rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-gray-500" style="max-width: 250px; word-break: break-word;">${lastStep}</td>`;
 
-            // Screenshots
-            rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-center">${exec.screenshots || 0}</td>`;
+            // Retries
+            const retries = exec.retries || [];
+            if (retries.length > 0) {
+                const retryFails = retries.filter(r => r.type === 'RETRY_FAIL').length;
+                const retryOks = retries.filter(r => r.type === 'RETRY_OK').length;
+                let retryBadge = '';
+                if (retryFails > 0 && retryOks === 0) {
+                    // Todas as tentativas falharam
+                    retryBadge = `<span style="background: #fef2f2; color: #dc2626; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">🔄 ${retryFails} falha${retryFails > 1 ? 's' : ''}</span>`;
+                } else if (retryOks > 0) {
+                    // Recuperou após retry
+                    retryBadge = `<span style="background: #fffbeb; color: #d97706; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">🔄 OK após ${retryFails + 1} tentativa${retryFails > 0 ? 's' : ''}</span>`;
+                } else {
+                    retryBadge = `<span style="background: #f0fdf4; color: #16a34a; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">🔄 ${retries.length}</span>`;
+                }
+                // Tooltip com detalhes
+                const retryDetails = retries.map(r => {
+                    const icon = r.type === 'RETRY_FAIL' ? '❌' : r.type === 'RETRY_OK' ? '✅' : '🔄';
+                    return `${icon} ${r.message}`;
+                }).join('&#10;');
+                rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-center" title="${retryDetails}">${retryBadge}</td>`;
+            } else {
+                rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-center text-gray-300">-</td>`;
+            }
+
+            // Screenshots — usar contagem real de PNGs atribuídos a esta linha (inclui failure screenshots)
+            const actualScreenshotCount = screenshotsByScenario[key] ? screenshotsByScenario[key].length : (exec.screenshots || 0);
+            rowDataHtml += `<td class="border border-gray-200 px-3 py-2 text-center">${actualScreenshotCount}</td>`;
 
             // Dados CSV se disponíveis
             if (hasCsvData && csvRow) {
@@ -724,9 +883,10 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
                 const imgIsFail = img.isFail || false;
                 const borderStyle = imgIsFail ? 'border: 2px solid #dc2626;' : '';
                 const failBadge = imgIsFail ? '<span style="background: #fef2f2; color: #dc2626; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600;">FALHA</span> ' : '';
+                const ssName = img.screenshotName ? `<span style="background: #e0e7ff; color: #3730a3; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 500;">${img.screenshotName}</span> ` : '';
                 screenshotsHtml += `
                     <div class="screenshot-card border border-gray-200 rounded p-2 bg-white shadow-sm hover:shadow-md transition" style="${borderStyle}">
-                        <p class="text-xs text-gray-500 mb-1">${failBadge}📸 Screenshot ${i + 1} — ⏰ ${timeStr}</p>
+                        <p class="text-xs text-gray-500 mb-1">${failBadge}${ssName}📸 Screenshot ${i + 1} — ⏰ ${timeStr}</p>
                         ${imgIsFail && img.errorMsg ? `<p class="text-xs text-red-600 mb-1">${img.errorMsg}</p>` : ''}
                         <img src="${img.base64}" class="w-full h-auto cursor-pointer rounded border border-gray-100" title="Clique para ampliar — Linha ${Number(idx) + 1}${label ? ' — ' + label : ''}" onclick="openScreenshotInNewTab(this.src)" style="cursor: zoom-in;"/>
                     </div>
