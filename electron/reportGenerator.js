@@ -411,6 +411,7 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
         let html = '';
         const pl = depth * 20; // padding left
         let globalLineNumber = 0;
+        let failScreenshotRendered = false; // Flag para exibir screenshot de falha apenas no PRIMEIRO step que falhou
 
         // Helper local para renderizar uma única ação como linha PA
         function renderActionRow(stepResult) {
@@ -463,10 +464,12 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
                 actionIcon = '📸';
                 actionTitle = 'Capturar screenshot';
                 actionDesc = `Capturar uma imagem da tela atual para evidência${numScenarios > 1 ? ` (📊 ${numScenarios} iterações de dados)` : ''}`;
-                // Marca que este step tem screenshot para embutir abaixo
-                stepResult._hasScreenshot = true;
-                stepResult._screenshotPos = screenshotPositionCounter;
-                screenshotPositionCounter++;
+                // Marca que este step tem screenshot para embutir abaixo — somente se executou de fato
+                if (isPassed) {
+                    stepResult._hasScreenshot = true;
+                    stepResult._screenshotPos = screenshotPositionCounter;
+                    screenshotPositionCounter++;
+                }
             } else if (stepText.match(/driver\.highlight/)) {
                 actionIcon = '🔦';
                 actionTitle = 'Destacar elemento';
@@ -507,14 +510,70 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
             }
             rowHtml += `</div>`;
 
+            // Se o step FALHOU, embutir o screenshot de falha automaticamente capturado pelo Karate
+            // Apenas no PRIMEIRO step que falhou (os subsequentes herdam 'failed' mas não executaram)
+            if (isFailed && !failScreenshotRendered) {
+                // Coletar TODOS os screenshots de falha (isFail: true) de todas as linhas CSV
+                const failScreenshots = [];
+                scenarioKeys.forEach(key => {
+                    const group = screenshotsByScenario[key];
+                    if (group) {
+                        group.forEach(ss => {
+                            if (ss.isFail && ss.base64) {
+                                failScreenshots.push({ ...ss, scenarioKey: key });
+                            }
+                        });
+                    }
+                });
+
+                if (failScreenshots.length > 0) {
+                    const failPreviewId = `ss_fail_${globalLineNumber}_${Math.random().toString(36).substr(2, 6)}`;
+                    rowHtml += `<div class="pa-fail-screenshot-inline">`;
+                    rowHtml += `<div class="pa-fail-screenshot-header" onclick="var el=document.getElementById('${failPreviewId}'); el.classList.toggle('pa-hidden'); this.querySelector('.pa-ss-chevron').classList.toggle('pa-open')">`;
+                    rowHtml += `<span class="pa-ss-chevron pa-open">▾</span> 📸 Screenshot no momento da falha${failScreenshots.length > 1 ? ` (${failScreenshots.length} linhas)` : ''}`;
+                    rowHtml += `</div>`;
+                    rowHtml += `<div id="${failPreviewId}" class="pa-fail-screenshot-body">`;
+
+                    if (failScreenshots.length > 1) {
+                        // Múltiplas linhas falharam — tabs para cada uma
+                        const failTabGroupId = `ss_fail_tabs_${globalLineNumber}_${Math.random().toString(36).substr(2, 6)}`;
+                        rowHtml += `<div class="pa-ss-tabs-container">`;
+                        rowHtml += `<div class="pa-ss-tabs-header">`;
+                        rowHtml += `<select class="pa-ss-tab-select" onchange="switchScreenshotTab('${failTabGroupId}', this.value)">`;
+                        failScreenshots.forEach((ss, i) => {
+                            const ssLabel = rowLabels[String(ss.scenarioKey)] || '';
+                            const ssLabelSuffix = ssLabel ? ` \u2014 ${ssLabel}` : '';
+                            rowHtml += `<option value="${i}">Linha ${Number(ss.scenarioKey) + 1} do CSV${ssLabelSuffix}</option>`;
+                        });
+                        rowHtml += `</select>`;
+                        rowHtml += `</div>`;
+                        failScreenshots.forEach((ss, i) => {
+                            const display = i === 0 ? '' : 'display:none;';
+                            rowHtml += `<div class="pa-ss-tab-panel" data-tab-group="${failTabGroupId}" data-tab-index="${i}" style="${display}">`;
+                            rowHtml += `<img src="${ss.base64}" class="pa-screenshot-thumb" onclick="openScreenshotInNewTab(this.src)" title="Clique para ampliar — Screenshot de falha da Linha ${Number(ss.scenarioKey) + 1}"/>`;
+                            rowHtml += `</div>`;
+                        });
+                        rowHtml += `</div>`;
+                    } else {
+                        // Uma única falha
+                        const ss = failScreenshots[0];
+                        rowHtml += `<img src="${ss.base64}" class="pa-screenshot-thumb" onclick="openScreenshotInNewTab(this.src)" title="Clique para ampliar — Screenshot no momento da falha"/>`;
+                    }
+
+                    rowHtml += `</div></div>`;
+                    failScreenshotRendered = true; // Não repetir em steps subsequentes
+                }
+            }
+
             // Se é um step de screenshot, embutir as imagens de TODAS as iterações
             if (stepResult._hasScreenshot) {
                 const pos = stepResult._screenshotPos;
                 // Coletar screenshots de todas as iterações nesta posição
+                // IMPORTANTE: filtrar screenshots de falha (isFail) — esses só aparecem na seção dedicada
                 const allScreenshotsForPos = [];
                 scenarioKeys.forEach(key => {
                     const group = screenshotsByScenario[key];
-                    if (group && group[pos]) {
+                    if (group && group[pos] && !group[pos].isFail) {
                         allScreenshotsForPos.push({ ...group[pos], scenarioKey: key });
                     }
                 });
@@ -1038,6 +1097,23 @@ function buildHtmlReport(summary, featureDetails, screenshotsContent, envInfo, r
             }
             .pa-screenshot-thumb:hover {
                 box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            }
+
+            /* Failure screenshot inline (below failed step) */
+            .pa-fail-screenshot-inline {
+                margin: 4px 14px 8px 56px;
+                border: 2px solid #fca5a5; border-radius: 8px;
+                overflow: hidden; background: #fef2f2;
+            }
+            .pa-fail-screenshot-header {
+                padding: 8px 12px; font-size: 13px; font-weight: 600;
+                color: #dc2626; cursor: pointer; user-select: none;
+                display: flex; align-items: center; gap: 6px;
+                transition: background 0.15s;
+            }
+            .pa-fail-screenshot-header:hover { background: #fee2e2; }
+            .pa-fail-screenshot-body {
+                padding: 8px; border-top: 1px solid #fca5a5;
             }
 
             /* Screenshot iteration tabs */
